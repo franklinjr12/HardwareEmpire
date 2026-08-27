@@ -9,7 +9,6 @@ var ui_layer: CanvasLayer
 var ui_root: Control
 var stats_label: Label
 var era_label: Label
-var event_label: Label
 var inspector_panel: ColorRect
 var inspector_title: Label
 var inspector_body: RichTextLabel
@@ -23,6 +22,7 @@ var active_screen := "workshop"
 var pending_build_position := Vector2(-1, -1)
 var last_world_position := Vector2.ZERO
 var camera_dragging := false
+var relocating_station_id := ""
 var overlays: Dictionary = {"throughput":false, "heatmap":false, "assignments":false, "shortage":false, "quality":false}
 var event_history: Array[String] = []
 
@@ -164,8 +164,6 @@ func _refresh_ui() -> void:
 	var summary: Dictionary = GameState.get_summary()
 	stats_label.text = "CASH $%d    REP %.1f    KNOW %.1f    JOBS %d    BOTTLENECKS %d" % [int(summary.cash), summary.reputation, summary.knowledge, summary.active_jobs, summary.bottlenecks]
 	era_label.text = "ERA %d  •  %s  •  EXPANSION %d  •  SPEED %.2fx" % [GameState.current_era, summary.era, GameState.expansion_level, GameState.time_scale]
-	if notification_timer <= 0.0:
-		event_label = event_label if is_instance_valid(event_label) else null
 	if inspector_panel.visible and active_screen == "workshop" and not selected_id.is_empty():
 		_refresh_selected_panel()
 
@@ -214,7 +212,7 @@ func _set_management_panel(screen: String) -> void:
 	match screen:
 		"dashboard":
 			title = "Company Dashboard"
-			body = "[font_size=18]Operating snapshot[/font_size]\n\nCash: $%d\nReputation: %.1f\nKnowledge: %.1f\nActive jobs: %d\nActive contracts: %d\nProduction shipped: %d\nBottlenecks: %d\n\nTop goal: %s" % [int(summary.cash), summary.reputation, summary.knowledge, summary.active_jobs, summary.active_contracts, summary.production, summary.bottlenecks, _next_goal()]
+			body = "[font_size=18]Operating snapshot[/font_size]\n\nCash: $%d\nReputation: %.1f\nKnowledge: %.1f\nActive jobs: %d\nActive contracts: %d\nProduction shipped: %d\nBottlenecks: %d\n\nDaily sales: $%d\nWeekly sales: $%d\n\nTop goal: %s" % [int(summary.cash), summary.reputation, summary.knowledge, summary.active_jobs, summary.active_contracts, summary.production, summary.bottlenecks, int(summary.sales_today), int(summary.sales_this_week), _next_goal()]
 			actions = [{"text":"Go to workshop", "callback":Callable(self, "_open_screen").bind("workshop")}, {"text":"Advance era ($%d)" % int(GameState.get_next_era_cost()), "callback":Callable(self, "_advance_era")}, {"text":"Expand floor ($%d)" % int(450.0 * GameState.expansion_level), "callback":Callable(self, "_expand")}]
 		"employees":
 			title = "Employees & Assignments"
@@ -346,8 +344,8 @@ func _upgrade_station(station_id: String) -> void:
 	_refresh_selected_panel()
 
 func _relocate_selected() -> void:
-	if GameState.relocate_station(selected_id, last_world_position):
-		_refresh_selected_panel()
+	relocating_station_id = selected_id
+	_on_event_logged("Click free grid tile to place station.", "info")
 
 func _hire_worker(role_id: String) -> void:
 	if not GameState.hire_worker(role_id):
@@ -413,6 +411,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_world_click(position: Vector2) -> void:
 	last_world_position = position
+	if not relocating_station_id.is_empty():
+		if GameState.relocate_station(relocating_station_id, position):
+			var moved_id := relocating_station_id
+			relocating_station_id = ""
+			_inspect_id("station", moved_id)
+		else:
+			_on_event_logged("Cannot relocate there: tile occupied or outside floor.", "warning")
+		return
 	var worker := GameState.get_worker_at(position)
 	if not worker.is_empty():
 		_inspect_id("worker", str(worker.id))
@@ -496,7 +502,11 @@ func _draw_stations() -> void:
 		draw_rect(rect, Color("#00000055"))
 		draw_rect(rect.grow(-3), color)
 		draw_rect(Rect2(rect.position + Vector2(0, rect.size.y - 8), Vector2(rect.size.x * float(station.progress), 8)), status_color)
-		if station.is_machine:
+		if station.kind in ["shelf", "storage"]:
+			draw_rect(Rect2(position - Vector2(50, 28), Vector2(100, 44)), color.lightened(0.12))
+			for shelf_x in [-32, 0, 32]:
+				draw_rect(Rect2(position + Vector2(shelf_x - 10, -20), Vector2(20, 28)), Color("#fbbf24"), false, 3.0)
+		elif station.is_machine:
 			draw_rect(Rect2(position - Vector2(42, 24), Vector2(84, 38)), color.lightened(0.2), false, 3.0)
 			draw_circle(position + Vector2(34, -15), 6, status_color)
 			draw_circle(position + Vector2(34, -15), 3, Color("#0f172a"))
@@ -506,6 +516,16 @@ func _draw_stations() -> void:
 		var label := str(station.name)
 		draw_string(ThemeDB.fallback_font, position + Vector2(-60, -49), label, HORIZONTAL_ALIGNMENT_LEFT, 120, 12, TEXT)
 		draw_string(ThemeDB.fallback_font, position + Vector2(-60, 60), status, HORIZONTAL_ALIGNMENT_LEFT, 120, 10, status_color)
+		if station.process == "component_pick":
+			var stock_total := 0
+			for component_id in GameState.inventory:
+				stock_total += int(GameState.inventory[component_id])
+			var stock_ratio: float = clamp(float(stock_total) / 60.0, 0.0, 1.0)
+			draw_rect(Rect2(position + Vector2(-48, 68), Vector2(96, 6)), Color("#111827"))
+			draw_rect(Rect2(position + Vector2(-48, 68), Vector2(96 * stock_ratio, 6)), Color("#4ade80") if stock_ratio > 0.25 else Color("#ef4444"))
+		if GameState.research.get("active_id", "") != "" and station.process in ["pcb_design", "oscilloscope"]:
+			draw_rect(Rect2(position + Vector2(-18, -18), Vector2(36, 22)), Color("#7dd3fc"))
+			draw_line(position + Vector2(-12, -12), position + Vector2(12, 5), Color("#14532d"), 2.0)
 		var queue_size: int = station.queue.size()
 		if queue_size > 0:
 			draw_circle(position + Vector2(55, -30), 12, status_color)
@@ -515,6 +535,14 @@ func _draw_stations() -> void:
 			draw_string(ThemeDB.fallback_font, position + Vector2(-17, -48), "!", HORIZONTAL_ALIGNMENT_LEFT, 16, 12, Color.WHITE)
 
 func _draw_items() -> void:
+	for index in GameState.deliveries.size():
+		var delivery: Dictionary = GameState.deliveries[index]
+		var delivery_start := GameState._position_for_station("incoming_shelf") + Vector2(-30, -34 - index * 20)
+		var delivery_end := GameState._position_for_station("parts_shelf") + Vector2(-30, -34)
+		var delivery_position: Vector2 = delivery_start.lerp(delivery_end, float(delivery.progress))
+		draw_rect(Rect2(delivery_position - Vector2(11, 9), Vector2(22, 18)), Color("#fbbf24"))
+		draw_line(delivery_position + Vector2(-8, -3), delivery_position + Vector2(8, -3), Color("#78350f"), 2.0)
+		draw_string(ThemeDB.fallback_font, delivery_position + Vector2(-12, -14), "DELIVERY", HORIZONTAL_ALIGNMENT_LEFT, 60, 8, Color("#fde68a"))
 	for item in GameState.get_item_visuals():
 		var position: Vector2 = item.position
 		var visual_kind := str(item.visual_kind)

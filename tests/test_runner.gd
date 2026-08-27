@@ -26,6 +26,16 @@ func _init() -> void:
 	var migrated := state.migrate_save(old_save)
 	_check_equal(int(migrated.get("save_version", 0)), 1, "save migration bumps schema")
 	_check(migrated.has("research") and migrated.has("expansion_level"), "save migration fills new fields")
+	state.money = 50000.0
+	for era_step in range(5):
+		_check(state.advance_era(), "era progression step %d" % (era_step + 2))
+	_check_equal(state.current_era, 6, "era progression reaches advanced company")
+	_check(state.stations.size() >= 15, "era progression creates visible facility stations")
+	_check(state.build_station("advanced_rd", Vector2(1920, 704)), "grid placement accepts free station tile")
+	_check(state.hire_worker("qa_technician"), "role hiring unlocks specialist")
+	state.contracts.append({"id":"test_contract", "name":"Test Order", "remaining":1, "units":1, "reward":100.0, "deadline":1.0, "age":0.0, "state":"active"})
+	state.advance(2.0)
+	_check_equal(state.contracts[-1].get("state", ""), "failed", "contract deadline applies penalty state")
 	state.free()
 
 	if failures > 0:

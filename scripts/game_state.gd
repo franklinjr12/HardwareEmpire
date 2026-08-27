@@ -32,6 +32,9 @@ var time_scale: float = 1.0
 var production_enabled: bool = false
 var last_saved_at: float = 0.0
 var last_offline_report: String = ""
+var sales_today: float = 0.0
+var sales_this_week: float = 0.0
+var _financial_day: int = 0
 
 var _job_counter: int = 0
 var _worker_counter: int = 0
@@ -101,6 +104,9 @@ func new_game() -> void:
 	simulation_time = 0.0
 	production_enabled = false
 	last_offline_report = "New workshop opened."
+	sales_today = 0.0
+	sales_this_week = 0.0
+	_financial_day = 0
 	_job_counter = 0
 	_worker_counter = 0
 	_station_counter = 0
@@ -311,6 +317,10 @@ func advance(delta_seconds: float) -> void:
 
 func _simulate_tick(delta_seconds: float) -> void:
 	simulation_time += delta_seconds
+	var financial_day := int(simulation_time / 86400.0)
+	if financial_day > _financial_day:
+		sales_today = 0.0
+		_financial_day = financial_day
 	_job_timer -= delta_seconds
 	_supplier_timer -= delta_seconds
 	_product_timer -= delta_seconds
@@ -547,6 +557,8 @@ func _finish_job(job: Dictionary) -> void:
 	job["station_id"] = "outgoing_shelf" if job.get("kind", "") == "repair" else "shipping_area"
 	var reward := SimulationRules.calculate_job_reward(float(job.get("base_reward", 0.0)), float(job.get("quality", 0.85)))
 	money += reward
+	sales_today += reward
+	sales_this_week += reward
 	reputation = clamp(reputation + (0.025 if float(job.get("quality", 0.85)) >= 0.75 else -0.02), 0.0, 100.0)
 	knowledge += 0.15 if job.get("kind", "") == "repair" else 0.35
 	if job.get("kind", "") == "product":
@@ -896,6 +908,9 @@ func save_game() -> bool:
 		"deliveries": deliveries,
 		"quality_hold": quality_hold,
 		"milestones": milestones,
+		"sales_today": sales_today,
+		"sales_this_week": sales_this_week,
+		"financial_day": _financial_day,
 		"counters":{"job":_job_counter,"worker":_worker_counter,"station":_station_counter,"contract":_contract_counter}
 	}
 	var file := FileAccess.open("user://hardware_empire_save.json", FileAccess.WRITE)
@@ -952,6 +967,9 @@ func _money_from_save(data: Dictionary) -> void:
 	deliveries = data.get("deliveries", [])
 	quality_hold = data.get("quality_hold", [])
 	milestones = data.get("milestones", {})
+	sales_today = float(data.get("sales_today", 0.0))
+	sales_this_week = float(data.get("sales_this_week", 0.0))
+	_financial_day = int(data.get("financial_day", int(simulation_time / 86400.0)))
 	var counters: Dictionary = data.get("counters", {})
 	_job_counter = int(counters.get("job", jobs.size()))
 	_worker_counter = int(counters.get("worker", workers.size()))
@@ -1008,12 +1026,14 @@ func _apply_offline_progress(seconds: float) -> void:
 	var completed_jobs: int = int(min(float(jobs.size()), seconds / 18.0 * worker_count))
 	var income := SimulationRules.calculate_offline_income(seconds, float(worker_count) * 180.0 / 18.0, 80.0)
 	money += income
+	sales_today += income
+	sales_this_week += income
 	knowledge += seconds / 3600.0 * float(worker_count) * 1.5
 	for delivery in deliveries:
 		var component_id := str(delivery.get("component_id", ""))
 		inventory[component_id] = int(inventory.get(component_id, 0)) + int(delivery.get("quantity", 0))
 	deliveries.clear()
-	last_offline_report = "Offline %dm: +$%d, %d simulated completions, deliveries received." % [int(seconds / 60.0), int(income), completed_jobs]
+	last_offline_report = "Offline %dm: +$%d, throughput estimate %d jobs, deliveries received." % [int(seconds / 60.0), int(income), completed_jobs]
 	event_logged.emit(last_offline_report, "info")
 
 func get_summary() -> Dictionary:
@@ -1028,4 +1048,4 @@ func get_summary() -> Dictionary:
 	for contract in contracts:
 		if contract.get("state", "") == "active":
 			active_contracts += 1
-	return {"cash":money,"reputation":reputation,"knowledge":knowledge,"active_jobs":active_jobs,"completed_jobs":completed_jobs,"active_contracts":active_contracts,"production":completed_jobs,"bottlenecks":get_active_bottlenecks().size(),"era":get_current_era_name(),"expansion":expansion_level}
+	return {"cash":money,"reputation":reputation,"knowledge":knowledge,"active_jobs":active_jobs,"completed_jobs":completed_jobs,"active_contracts":active_contracts,"production":completed_jobs,"bottlenecks":get_active_bottlenecks().size(),"era":get_current_era_name(),"expansion":expansion_level,"sales_today":sales_today,"sales_this_week":sales_this_week}
