@@ -20,6 +20,7 @@ var research: Dictionary = {}
 var deliveries: Array = []
 var quality_hold: Array = []
 var milestones: Dictionary = {}
+var navigation_grid: WorkshopGrid = WorkshopGrid.new(70, 34)
 
 var money: float = 250.0
 var reputation: float = 1.0
@@ -88,6 +89,7 @@ func new_game() -> void:
 	contracts.clear()
 	deliveries.clear()
 	quality_hold.clear()
+	navigation_grid = WorkshopGrid.new(70, 34)
 	inventory = {"microcontroller": 12, "sensor": 16, "pcb": 10, "power_module": 8}
 	research = {"active_id": "", "completed": [], "progress": 0.0}
 	milestones = {}
@@ -112,7 +114,7 @@ func new_game() -> void:
 	for i in range(5):
 		_create_repair_job()
 	_refresh_milestones()
-	emit_signal(state_changed)
+	state_changed.emit()
 
 func _load_catalog() -> void:
 	var path := "res://data/content.json"
@@ -135,7 +137,7 @@ func _add_station(definition_id: String, custom_position: Vector2 = Vector2(-1, 
 		return ""
 	_station_counter += 1
 	var station_id := definition_id
-	if _find_station(station_id) != null:
+	if not _find_station(station_id).is_empty():
 		station_id = definition_id + "_" + str(_station_counter)
 	var position: Vector2 = custom_position if custom_position.x >= 0.0 else _position_for_station(definition_id)
 	var station := {
@@ -161,6 +163,7 @@ func _add_station(definition_id: String, custom_position: Vector2 = Vector2(-1, 
 		"is_machine": definition.get("kind", "") == "machine"
 	}
 	stations.append(station)
+	navigation_grid.place(station_id, navigation_grid.world_to_cell(position), Vector2i(3, 2))
 	return station_id
 
 func _station_definition(definition_id: String) -> Dictionary:
@@ -225,7 +228,8 @@ func _add_worker(role_id: String, display_name: String = "", spawn_position: Vec
 		"carrying": "",
 		"training": 0.0,
 		"walk_cycle": 0.0,
-		"target": spawn_position
+		"target": spawn_position,
+		"path": []
 	})
 	return worker_id
 
@@ -303,7 +307,7 @@ func advance(delta_seconds: float) -> void:
 		_simulate_tick(TICK_SECONDS)
 		changed = true
 	if changed:
-		emit_signal(state_changed)
+		state_changed.emit()
 
 func _simulate_tick(delta_seconds: float) -> void:
 	simulation_time += delta_seconds
@@ -334,6 +338,7 @@ func _simulate_tick(delta_seconds: float) -> void:
 	_process_stations(delta_seconds)
 	_process_research(delta_seconds)
 	_process_deliveries(delta_seconds)
+	_process_contracts(delta_seconds)
 	_refresh_milestones()
 
 func _dispatch_incoming_jobs() -> void:
@@ -385,6 +390,9 @@ func _assign_workers() -> void:
 				candidate["state"] = "MOVING_TO_STATION"
 				candidate["animation"] = "walk"
 				candidate["target"] = station["position"]
+				var start_cell := navigation_grid.world_to_cell(candidate.get("position", Vector2.ZERO))
+				var target_cell := navigation_grid.world_to_cell(station.get("position", Vector2.ZERO)) + Vector2i(-2, 2)
+				candidate["path"] = navigation_grid.find_path(start_cell, target_cell)
 
 func _best_available_worker(station: Dictionary) -> Dictionary:
 	var best: Dictionary = {}
@@ -392,11 +400,28 @@ func _best_available_worker(station: Dictionary) -> Dictionary:
 	for worker in workers:
 		if not str(worker.get("assignment", "")).is_empty():
 			continue
+		if not _worker_can_run(worker, station):
+			continue
 		var distance: float = worker.get("position", Vector2.ZERO).distance_to(station.get("position", Vector2.ZERO))
 		if distance < best_distance:
 			best = worker
 			best_distance = distance
 	return best
+
+func _worker_can_run(worker: Dictionary, station: Dictionary) -> bool:
+	var role_id := str(worker.get("role_id", ""))
+	var process := str(station.get("process", ""))
+	if role_id in ["founder", "junior_technician", "senior_technician"]:
+		return process in ["repair", "diagnostics", "component_pick"]
+	if role_id == "diagnostics_technician":
+		return process in ["diagnostics", "testing", "calibration"]
+	if role_id in ["electronics_specialist", "pcb_designer", "firmware_engineer"]:
+		return process in ["oscilloscope", "pcb_design", "pcb_assembly", "reflow", "firmware", "assembly"]
+	if role_id == "qa_technician":
+		return process in ["testing", "qa", "calibration"]
+	if role_id == "production_operator":
+		return process in ["component_pick", "pcb_assembly", "reflow", "assembly", "packaging", "shipping"]
+	return true
 
 func _worker_for_station(station_id: String) -> Dictionary:
 	for worker in workers:
@@ -416,7 +441,16 @@ func _update_workers(delta_seconds: float) -> void:
 		var station := _find_station(assignment)
 		if station.is_empty():
 			continue
-		var target: Vector2 = station.get("position", worker.get("position", Vector2.ZERO))
+		var work_target: Vector2 = station.get("position", worker.get("position", Vector2.ZERO)) + Vector2(-48, 46)
+		var target: Vector2 = work_target
+		var path: Array = worker.get("path", [])
+		if path.size() > 1:
+			var waypoint: Vector2 = navigation_grid.cell_to_world(path[1])
+			if worker.get("position", Vector2.ZERO).distance_to(waypoint) <= 10.0:
+				path.pop_front()
+				worker["path"] = path
+			else:
+				target = waypoint
 		worker["target"] = target
 		var position: Vector2 = worker.get("position", Vector2.ZERO)
 		var distance := position.distance_to(target)
@@ -425,9 +459,10 @@ func _update_workers(delta_seconds: float) -> void:
 			worker["state"] = "MOVING_TO_STATION"
 			worker["animation"] = "carry" if not str(worker.get("carrying", "")).is_empty() else "walk"
 		else:
-			worker["position"] = target + Vector2(-48, 46)
+			worker["position"] = target
 			worker["state"] = "WORKING"
 			worker["animation"] = "work"
+			worker["training"] = min(100.0, float(worker.get("training", 0.0)) + delta_seconds * 0.2)
 			var current_id := str(station.get("current", ""))
 			if not current_id.is_empty():
 				var job := _find_job(current_id)
@@ -448,7 +483,7 @@ func _process_stations(delta_seconds: float) -> void:
 			station["status"] = "OVERLOADED" if queue.size() > int(station.get("capacity", 1)) else "IDLE"
 			continue
 		var worker := _worker_for_station(str(station.get("id", "")))
-		var worker_ready := not worker.is_empty() and worker.get("state", "") == "WORKING"
+		var worker_ready: bool = not worker.is_empty() and worker.get("state", "") == "WORKING"
 		var machine_ready := bool(station.get("is_machine", false)) and float(station.get("maintenance", 1.0)) > 0.0
 		if not worker_ready and not machine_ready:
 			station["status"] = "WAITING"
@@ -496,7 +531,7 @@ func _complete_station_work(station: Dictionary, job_id: String, worker: Diction
 	var next_station := _station_for_process(next_process)
 	if next_station.is_empty():
 		job["state"] = "blocked"
-		emit_signal(event_logged, "%s waiting for %s" % [job.get("label", "Item"), next_process], "warning")
+		event_logged.emit("%s waiting for %s" % [job.get("label", "Item"), next_process], "warning")
 		return
 	var next_queue: Array = next_station.get("queue", [])
 	if next_queue.size() >= int(next_station.get("capacity", 1)) * 3:
@@ -516,7 +551,7 @@ func _finish_job(job: Dictionary) -> void:
 	knowledge += 0.15 if job.get("kind", "") == "repair" else 0.35
 	if job.get("kind", "") == "product":
 		_complete_contract_unit(str(job.get("contract_id", "")))
-	emit_signal(item_completed, str(job.get("id", "")), str(job.get("kind", "")))
+	item_completed.emit(str(job.get("id", "")), str(job.get("kind", "")))
 
 func _complete_contract_unit(contract_id: String) -> void:
 	if contract_id.is_empty():
@@ -529,7 +564,7 @@ func _complete_contract_unit(contract_id: String) -> void:
 		contract["state"] = "completed"
 		money += float(contract.get("reward", 0.0))
 		reputation += 0.5
-		emit_signal(event_logged, "Contract complete: %s" % contract.get("name", "Order"), "success")
+		event_logged.emit("Contract complete: %s" % contract.get("name", "Order"), "success")
 
 func _find_contract(contract_id: String) -> Dictionary:
 	for contract in contracts:
@@ -553,7 +588,7 @@ func _process_research(delta_seconds: float) -> void:
 		research["active_id"] = ""
 		research["progress"] = 0.0
 		knowledge += float(definition.get("cost", 1.0))
-		emit_signal(event_logged, "Research complete: %s" % definition.get("name", active_id), "success")
+		event_logged.emit("Research complete: %s" % definition.get("name", active_id), "success")
 
 func _research_definition(research_id: String) -> Dictionary:
 	for definition in catalog.get("research", []):
@@ -569,7 +604,17 @@ func _process_deliveries(delta_seconds: float) -> void:
 			var component_id := str(delivery.get("component_id", ""))
 			inventory[component_id] = int(inventory.get(component_id, 0)) + int(delivery.get("quantity", 0))
 			deliveries.erase(delivery)
-			emit_signal(event_logged, "Delivery arrived: %s" % component_id, "success")
+			event_logged.emit("Delivery arrived: %s" % component_id, "success")
+
+func _process_contracts(delta_seconds: float) -> void:
+	for contract in contracts:
+		if contract.get("state", "") != "active":
+			continue
+		contract["age"] = float(contract.get("age", 0.0)) + delta_seconds
+		if float(contract.get("age", 0.0)) >= float(contract.get("deadline", 180.0)) and int(contract.get("remaining", 0)) > 0:
+			contract["state"] = "failed"
+			reputation = max(0.0, reputation - 0.75)
+			event_logged.emit("Contract failed: %s" % contract.get("name", "Order"), "warning")
 
 func _receive_delivery() -> void:
 	var component_ids: Array = ["microcontroller", "sensor", "pcb", "power_module"]
@@ -605,8 +650,8 @@ func hire_worker(role_id: String = "junior_technician") -> bool:
 		return false
 	money -= cost
 	_add_worker(role_id)
-	emit_signal(event_logged, "Hired %s" % role.get("name", "technician"), "success")
-	emit_signal(state_changed)
+	event_logged.emit("Hired %s" % role.get("name", "technician"), "success")
+	state_changed.emit()
 	return true
 
 func _role_era(role_id: String) -> int:
@@ -631,24 +676,34 @@ func upgrade_station(station_id: String) -> bool:
 	station["tier"] = int(station.get("tier", 1)) + 1
 	station["capacity"] = int(station.get("capacity", 1)) + 1
 	station["maintenance"] = 1.0
-	emit_signal(event_logged, "%s upgraded to tier %d" % [station.get("name", "Station"), station["tier"]], "success")
-	emit_signal(state_changed)
+	event_logged.emit("%s upgraded to tier %d" % [station.get("name", "Station"), station["tier"]], "success")
+	state_changed.emit()
 	return true
 
-func build_station(definition_id: String) -> bool:
+func build_station(definition_id: String, preferred_position: Vector2 = Vector2(-1, -1)) -> bool:
 	var definition := _station_definition(definition_id)
 	if definition.is_empty() or int(definition.get("era", 1)) > current_era:
 		return false
 	var cost := float(definition.get("cost", 0.0))
 	if money < cost:
 		return false
-	var position := _find_free_position()
+	var position := preferred_position.snapped(Vector2(32, 32)) if preferred_position.x >= 0.0 else _find_free_position()
+	if preferred_position.x >= 0.0 and not _position_is_free(position):
+		return false
 	if position.x < 0.0:
 		return false
 	money -= cost
 	_add_station(definition_id, position)
-	emit_signal(event_logged, "Built %s" % definition.get("name", definition_id), "success")
-	emit_signal(state_changed)
+	event_logged.emit("Built %s" % definition.get("name", definition_id), "success")
+	state_changed.emit()
+	return true
+
+func _position_is_free(position: Vector2) -> bool:
+	if position.x < 64.0 or position.y < 64.0 or position.x > 1984.0 or position.y > 920.0:
+		return false
+	for station in stations:
+		if station.get("position", Vector2.ZERO).distance_to(position) < 110.0:
+			return false
 	return true
 
 func _find_free_position() -> Vector2:
@@ -669,8 +724,8 @@ func expand_workshop() -> bool:
 		return false
 	money -= cost
 	expansion_level += 1
-	emit_signal(event_logged, "Workshop expanded: %s" % ERA_ROOM_NAMES[expansion_level - 1], "success")
-	emit_signal(state_changed)
+	event_logged.emit("Workshop expanded: %s" % ERA_ROOM_NAMES[expansion_level - 1], "success")
+	state_changed.emit()
 	return true
 
 func advance_era() -> bool:
@@ -683,6 +738,7 @@ func advance_era() -> bool:
 		return false
 	money -= cost
 	current_era = next_era
+	expansion_level = max(expansion_level, current_era)
 	if current_era >= 4:
 		production_enabled = true
 	_unlock_era_stations()
@@ -690,8 +746,8 @@ func advance_era() -> bool:
 		for job in jobs:
 			if job.get("kind", "") == "repair" and job.get("state", "") == "incoming":
 				job["pipeline"] = ["diagnostics", "repair", "testing", "outgoing"] if current_era >= 4 else ["diagnostics", "repair", "outgoing"]
-	emit_signal(event_logged, "Era %d unlocked: %s" % [current_era, definition.get("name", "" )], "success")
-	emit_signal(state_changed)
+	event_logged.emit("Era %d unlocked: %s" % [current_era, definition.get("name", "" )], "success")
+	state_changed.emit()
 	return true
 
 func _unlock_era_stations() -> void:
@@ -715,8 +771,8 @@ func start_research(research_id: String) -> bool:
 	knowledge -= cost
 	research["active_id"] = research_id
 	research["progress"] = 0.0
-	emit_signal(event_logged, "Research started: %s" % definition.get("name", research_id), "info")
-	emit_signal(state_changed)
+	event_logged.emit("Research started: %s" % definition.get("name", research_id), "info")
+	state_changed.emit()
 	return true
 
 func accept_contract(contract_id: String) -> bool:
@@ -724,17 +780,24 @@ func accept_contract(contract_id: String) -> bool:
 	if contract.is_empty() or contract.get("state", "") != "offered":
 		return false
 	contract["state"] = "active"
-	emit_signal(event_logged, "Accepted contract: %s" % contract.get("name", "Order"), "info")
-	emit_signal(state_changed)
+	event_logged.emit("Accepted contract: %s" % contract.get("name", "Order"), "info")
+	state_changed.emit()
 	return true
 
 func relocate_station(station_id: String, position: Vector2) -> bool:
 	var station := _find_station(station_id)
 	if station.is_empty() or position.x < 64.0 or position.y < 64.0:
 		return false
-	station["position"] = position.snapped(Vector2(32, 32))
-	emit_signal(event_logged, "Relocated %s" % station.get("name", "Station"), "info")
-	emit_signal(state_changed)
+	var snapped_position := position.snapped(Vector2(32, 32))
+	var old_position: Vector2 = station.get("position", Vector2.ZERO)
+	navigation_grid.remove(station_id)
+	if not _position_is_free(snapped_position):
+		navigation_grid.place(station_id, navigation_grid.world_to_cell(old_position), Vector2i(3, 2))
+		return false
+	station["position"] = snapped_position
+	navigation_grid.place(station_id, navigation_grid.world_to_cell(snapped_position), Vector2i(3, 2))
+	event_logged.emit("Relocated %s" % station.get("name", "Station"), "info")
+	state_changed.emit()
 	return true
 
 func set_time_scale(value: float) -> void:
@@ -856,9 +919,9 @@ func load_game() -> bool:
 	_money_from_save(data)
 	var previous_timestamp := float(data.get("timestamp", Time.get_unix_time_from_system()))
 	last_saved_at = Time.get_unix_time_from_system()
-	var offline_seconds := clamp(last_saved_at - previous_timestamp, 0.0, MAX_OFFLINE_SECONDS)
+	var offline_seconds: float = clamp(last_saved_at - previous_timestamp, 0.0, MAX_OFFLINE_SECONDS)
 	_apply_offline_progress(offline_seconds)
-	emit_signal(state_changed)
+	state_changed.emit()
 	return true
 
 func migrate_save(data: Dictionary) -> Dictionary:
@@ -898,7 +961,7 @@ func _money_from_save(data: Dictionary) -> void:
 func _serialize_workers() -> Array:
 	var result: Array = []
 	for worker in workers:
-		var copy := worker.duplicate(true)
+		var copy: Dictionary = worker.duplicate(true)
 		var position: Vector2 = copy.get("position", Vector2.ZERO)
 		var target: Vector2 = copy.get("target", position)
 		copy["position"] = {"x":position.x,"y":position.y}
@@ -909,7 +972,7 @@ func _serialize_workers() -> Array:
 func _serialize_stations() -> Array:
 	var result: Array = []
 	for station in stations:
-		var copy := station.duplicate(true)
+		var copy: Dictionary = station.duplicate(true)
 		var position: Vector2 = copy.get("position", Vector2.ZERO)
 		copy["position"] = {"x":position.x,"y":position.y}
 		result.append(copy)
@@ -928,19 +991,21 @@ func _deserialize_workers(raw: Array) -> Array:
 
 func _deserialize_stations(raw: Array) -> Array:
 	var result: Array = []
+	navigation_grid = WorkshopGrid.new(70, 34)
 	for station in raw:
 		var copy: Dictionary = station.duplicate(true)
 		var position: Dictionary = copy.get("position", {})
 		copy["position"] = Vector2(float(position.get("x", 112)), float(position.get("y", 112)))
 		result.append(copy)
+		navigation_grid.place(str(copy.get("id", "")), navigation_grid.world_to_cell(copy["position"]), Vector2i(3, 2))
 	return result
 
 func _apply_offline_progress(seconds: float) -> void:
 	if seconds < 1.0:
 		last_offline_report = "No offline time elapsed."
 		return
-	var worker_count := max(1, workers.size())
-	var completed_jobs := int(min(float(jobs.size()), seconds / 18.0 * worker_count))
+	var worker_count: int = max(1, workers.size())
+	var completed_jobs: int = int(min(float(jobs.size()), seconds / 18.0 * worker_count))
 	var income := SimulationRules.calculate_offline_income(seconds, float(worker_count) * 180.0 / 18.0, 80.0)
 	money += income
 	knowledge += seconds / 3600.0 * float(worker_count) * 1.5
@@ -949,7 +1014,7 @@ func _apply_offline_progress(seconds: float) -> void:
 		inventory[component_id] = int(inventory.get(component_id, 0)) + int(delivery.get("quantity", 0))
 	deliveries.clear()
 	last_offline_report = "Offline %dm: +$%d, %d simulated completions, deliveries received." % [int(seconds / 60.0), int(income), completed_jobs]
-	emit_signal(event_logged, last_offline_report, "info")
+	event_logged.emit(last_offline_report, "info")
 
 func get_summary() -> Dictionary:
 	var active_jobs := 0

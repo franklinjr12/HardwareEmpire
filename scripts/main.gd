@@ -19,6 +19,9 @@ var refresh_timer := 0.0
 var selected_kind := ""
 var selected_id := ""
 var active_screen := "workshop"
+var pending_build_position := Vector2(-1, -1)
+var last_world_position := Vector2.ZERO
+var camera_dragging := false
 var overlays: Dictionary = {"throughput":false, "heatmap":false, "assignments":false, "shortage":false, "quality":false}
 var event_history: Array[String] = []
 
@@ -327,8 +330,9 @@ func _inspect_id(kind: String, id: String) -> void:
 	_refresh_selected_panel()
 
 func _build_station(definition_id: String) -> void:
-	if not GameState.build_station(definition_id):
+	if not GameState.build_station(definition_id, pending_build_position):
 		_on_event_logged("Cannot build %s: check era, cash, space, or duplicate." % definition_id, "warning")
+	pending_build_position = Vector2(-1, -1)
 	_open_screen(active_screen)
 
 func _upgrade_station(station_id: String) -> void:
@@ -337,7 +341,7 @@ func _upgrade_station(station_id: String) -> void:
 	_refresh_selected_panel()
 
 func _relocate_selected() -> void:
-	if GameState.relocate_station(selected_id, get_global_mouse_position()):
+	if GameState.relocate_station(selected_id, last_world_position):
 		_refresh_selected_panel()
 
 func _hire_worker(role_id: String) -> void:
@@ -390,14 +394,20 @@ func _move_camera(delta: float) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_MIDDLE:
+			camera_dragging = event.pressed
+			return
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
 			camera.zoom = (camera.zoom + Vector2(0.1, 0.1)).clamp(Vector2(0.55, 0.55), Vector2(1.8, 1.8))
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
 			camera.zoom = (camera.zoom - Vector2(0.1, 0.1)).clamp(Vector2(0.55, 0.55), Vector2(1.8, 1.8))
 		elif event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_handle_world_click(get_global_mouse_position())
+	elif event is InputEventMouseMotion and camera_dragging:
+		camera.position -= event.relative / camera.zoom.x
 
 func _handle_world_click(position: Vector2) -> void:
+	last_world_position = position
 	var worker := GameState.get_worker_at(position)
 	if not worker.is_empty():
 		_inspect_id("worker", str(worker.id))
@@ -414,6 +424,7 @@ func _handle_world_click(position: Vector2) -> void:
 
 func _show_build_panel(position: Vector2) -> void:
 	active_screen = "workshop"
+	pending_build_position = position
 	selected_kind = ""
 	selected_id = ""
 	var actions: Array = []

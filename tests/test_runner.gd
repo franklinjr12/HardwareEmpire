@@ -26,6 +26,7 @@ func _init() -> void:
 	var migrated := state.migrate_save(old_save)
 	_check_equal(int(migrated.get("save_version", 0)), 1, "save migration bumps schema")
 	_check(migrated.has("research") and migrated.has("expansion_level"), "save migration fills new fields")
+	state.free()
 
 	if failures > 0:
 		push_error("%d regression test(s) failed" % failures)
