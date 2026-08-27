@@ -3,6 +3,7 @@ extends Node2D
 const WORLD_SIZE := Vector2(2200, 1050)
 const PANEL_X := 1030.0
 
+var GameState: HardwareEmpireState
 var camera: Camera2D
 var ui_layer: CanvasLayer
 var ui_root: Control
@@ -33,6 +34,10 @@ const MUTED := Color("#94a3b8")
 const WORLD_BG := Color("#0b1220")
 
 func _ready() -> void:
+	GameState = get_node_or_null("/root/GameState") as HardwareEmpireState
+	if GameState == null:
+		push_error("HardwareEmpire requires /root/GameState autoload")
+		return
 	camera = Camera2D.new()
 	camera.position = Vector2(720, 450)
 	camera.zoom = Vector2.ONE
