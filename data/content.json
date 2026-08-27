@@ -1,0 +1,66 @@
+{
+  "roles": [
+    {"id":"founder","name":"Founder","color":"#f2c14e","skill":1.25},
+    {"id":"junior_technician","name":"Junior Technician","color":"#65c18c","skill":0.8},
+    {"id":"senior_technician","name":"Senior Technician","color":"#54a0d8","skill":1.15},
+    {"id":"diagnostics_technician","name":"Diagnostics Technician","color":"#9b7ede","skill":1.1},
+    {"id":"electronics_specialist","name":"Electronics Specialist","color":"#d982b5","skill":1.2},
+    {"id":"pcb_designer","name":"PCB Designer","color":"#ed8936","skill":1.15},
+    {"id":"firmware_engineer","name":"Firmware Engineer","color":"#38bdf8","skill":1.2},
+    {"id":"qa_technician","name":"QA Technician","color":"#f87171","skill":1.1},
+    {"id":"production_operator","name":"Production Operator","color":"#a3e635","skill":1.0},
+    {"id":"process_engineer","name":"Process Engineer","color":"#fbbf24","skill":1.3}
+  ],
+  "stations": [
+    {"id":"incoming_shelf","name":"Incoming Shelf","kind":"shelf","zone":"reception","process":"incoming","era":1,"cost":0,"duration":1.0,"capacity":12,"color":"#64748b"},
+    {"id":"parts_shelf","name":"Parts Shelf","kind":"storage","zone":"storage","process":"component_pick","era":1,"cost":0,"duration":1.0,"capacity":20,"color":"#a16207"},
+    {"id":"repair_bench_1","name":"Repair Bench","kind":"bench","zone":"repair","process":"repair","era":1,"cost":0,"duration":9.0,"capacity":2,"color":"#c08457"},
+    {"id":"outgoing_shelf","name":"Completed Pickup","kind":"shelf","zone":"shipping","process":"outgoing","era":1,"cost":0,"duration":1.0,"capacity":12,"color":"#22c55e"},
+    {"id":"diagnostics_bench","name":"Diagnostics Bench","kind":"bench","zone":"diagnostics","process":"diagnostics","era":2,"cost":260,"duration":7.0,"capacity":2,"color":"#7c3aed"},
+    {"id":"repair_bench_2","name":"Repair Bench II","kind":"bench","zone":"repair","process":"repair","era":2,"cost":340,"duration":7.0,"capacity":2,"color":"#d97706"},
+    {"id":"oscilloscope_bench","name":"Oscilloscope Bench","kind":"bench","zone":"engineering","process":"oscilloscope","era":3,"cost":560,"duration":8.0,"capacity":2,"color":"#0891b2"},
+    {"id":"pcb_design_station","name":"PCB Design Desk","kind":"desk","zone":"engineering","process":"pcb_design","era":3,"cost":700,"duration":10.0,"capacity":2,"color":"#2563eb"},
+    {"id":"reflow_station","name":"Reflow Oven","kind":"machine","zone":"engineering","process":"reflow","era":3,"cost":900,"duration":8.0,"capacity":3,"color":"#dc2626","machine":"reflow_oven"},
+    {"id":"firmware_desk","name":"Firmware Desk","kind":"desk","zone":"engineering","process":"firmware","era":3,"cost":850,"duration":9.0,"capacity":2,"color":"#0ea5e9"},
+    {"id":"pcb_assembly_station","name":"PCB Assembly Cell","kind":"machine","zone":"production","process":"pcb_assembly","era":4,"cost":1150,"duration":9.0,"capacity":3,"color":"#16a34a","machine":"pick_and_place"},
+    {"id":"assembly_station","name":"Assembly Cell","kind":"machine","zone":"production","process":"assembly","era":4,"cost":1200,"duration":10.0,"capacity":3,"color":"#65a30d","machine":"assembly_cell"},
+    {"id":"testing_station","name":"Testing Station","kind":"machine","zone":"quality","process":"testing","era":4,"cost":1100,"duration":8.0,"capacity":2,"color":"#9333ea","machine":"test_jig"},
+    {"id":"packaging_station","name":"Packaging Station","kind":"machine","zone":"shipping","process":"packaging","era":4,"cost":950,"duration":7.0,"capacity":3,"color":"#0891b2","machine":"packaging_line"},
+    {"id":"warehouse_shelf","name":"Warehouse Shelf","kind":"storage","zone":"warehouse","process":"storage","era":4,"cost":650,"duration":1.0,"capacity":40,"color":"#b45309"},
+    {"id":"qa_lab","name":"QA Lab","kind":"machine","zone":"quality","process":"qa","era":5,"cost":1800,"duration":11.0,"capacity":3,"color":"#be123c","machine":"environmental_chamber"},
+    {"id":"calibration_bench","name":"Calibration Rig","kind":"machine","zone":"quality","process":"calibration","era":5,"cost":1600,"duration":10.0,"capacity":2,"color":"#4f46e5","machine":"calibration_rig"},
+    {"id":"shipping_area","name":"Shipping Area","kind":"shipping","zone":"warehouse","process":"shipping","era":5,"cost":1200,"duration":4.0,"capacity":20,"color":"#15803d"},
+    {"id":"advanced_rd","name":"Advanced R&D","kind":"desk","zone":"advanced_rd","process":"research","era":6,"cost":2800,"duration":12.0,"capacity":3,"color":"#c026d3"}
+  ],
+  "products": [
+    {"id":"temperature_sensor","name":"Temperature Sensor","family":"sensor","price":240,"quality":0.9,"components":{"microcontroller":1,"sensor":1,"pcb":1},"pipeline":["component_pick","pcb_assembly","reflow","firmware","testing","assembly","packaging"]},
+    {"id":"farming_drone_module","name":"Farming Drone Module","family":"drone","price":680,"quality":0.86,"components":{"microcontroller":2,"sensor":3,"pcb":2,"power_module":1},"pipeline":["component_pick","pcb_assembly","reflow","firmware","assembly","calibration","testing","packaging"]},
+    {"id":"industrial_controller","name":"Industrial Controller","family":"industrial","price":1250,"quality":0.82,"components":{"microcontroller":3,"sensor":2,"pcb":3,"power_module":2},"pipeline":["component_pick","pcb_assembly","reflow","firmware","assembly","calibration","qa","testing","packaging"]}
+  ],
+  "research": [
+    {"id":"pcb_design","name":"PCB Design","era":3,"cost":4,"duration":60,"description":"Unlock prototype boards and engineering flow."},
+    {"id":"surface_mount","name":"Surface Mount Process","era":4,"cost":8,"duration":100,"description":"Increase assembly throughput with machine cells."},
+    {"id":"certified_quality","name":"Certified Quality","era":5,"cost":14,"duration":140,"description":"Unlock QA lab and industrial contracts."},
+    {"id":"autonomous_cells","name":"Autonomous Cells","era":6,"cost":24,"duration":220,"description":"Advanced production cells work with fewer operators."}
+  ],
+  "contracts": [
+    {"id":"local_repair_batch","name":"Local Repair Batch","era":2,"units":4,"reward":520,"deadline":180},
+    {"id":"prototype_run","name":"Prototype Run","era":3,"units":3,"reward":1200,"deadline":240},
+    {"id":"industrial_sensor_order","name":"Industrial Sensor Order","era":5,"units":8,"reward":4200,"deadline":480},
+    {"id":"infrastructure_controller","name":"Infrastructure Controller","era":6,"units":12,"reward":12000,"deadline":720}
+  ],
+  "components": [
+    {"id":"microcontroller","name":"Microcontrollers","color":"#60a5fa"},
+    {"id":"sensor","name":"Sensors","color":"#34d399"},
+    {"id":"pcb","name":"PCBs","color":"#4ade80"},
+    {"id":"power_module","name":"Power Modules","color":"#fbbf24"}
+  ],
+  "eras": [
+    {"id":1,"name":"Solo Repair Technician","cost":0,"description":"One room, one bench, one founder."},
+    {"id":2,"name":"Local Repair Shop","cost":500,"description":"Staff, diagnostics, parallel repairs."},
+    {"id":3,"name":"Electronics Workshop","cost":1100,"description":"Engineering, prototypes, firmware."},
+    {"id":4,"name":"Small Manufacturer","cost":2400,"description":"Products move through production."},
+    {"id":5,"name":"Industrial Supplier","cost":5200,"description":"QA, contracts, warehouse scale."},
+    {"id":6,"name":"Advanced Technology Company","cost":11000,"description":"Automated divisions and complex systems."}
+  ]
+}
