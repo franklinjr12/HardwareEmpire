@@ -1,22 +1,23 @@
 # Hardware Empire implementation map
 
-Playable code-native prototype covers backlog systems through one primary workshop scene.
+Era-1 vertical slice uses one primary physical workshop scene. Player personally handles customer intake, parts, diagnosis, repair, and outbound delivery.
 
 ## Runtime
 
-- `scripts/game_state.gd`: authoritative simulation, workers, jobs, products, stations, machines, suppliers, R&D, contracts, quality, progression, saves, and offline aggregation.
-- `scripts/main.gd`: workshop renderer, procedural crisp pixel-grid visuals, camera controls, inspection, placement/relocation, overlays, dashboard, and management panels.
-- `data/content.json`: stable-ID content catalog for roles, stations, machines, products, research, contracts, components, and eras.
+- `scripts/game_state.gd`: application coordinator, legacy later-era compatibility, save/load routing, and Era-1 state projection.
+- `scripts/simulation/repair_shop_simulation.gd`: authoritative Era-1 simulation for customers, job states, reservations, timed supplier deliveries, player movement actions, diagnosis, repair choices, XP, mastery, tools, upgrades, and serialization.
+- `scripts/tiny_workshop.gd`: physical workshop renderer and interaction UI. Click stations to walk there; actions resolve only on arrival.
+- `scripts/main.gd`: retained later-era management prototype for compatibility while Era 1 is the active main scene.
+- `data/content.json`: stable-ID content catalog for repair jobs, customers, components, tools, stations, products, research, contracts, and eras.
 - `scripts/simulation/workshop_grid.gd`: grid placement and lightweight worker navigation.
 - `scripts/simulation/simulation_rules.gd`: deterministic economy, quality, throughput, and bottleneck rules.
 
 ## Controls
 
-- `WASD` / arrow keys: pan camera.
-- Middle mouse drag: pan camera.
-- Mouse wheel: zoom.
-- Left click: inspect worker, station, item, or open build placement.
-- Bottom navigation: dashboard and specialized management panels.
+- Left click empty floor: move founder.
+- Left click workstation: walk to it, then open interaction panel.
+- `ESC`: close interaction panel.
+- Top bar: save and workshop upgrades.
 
 ## Validation
 
@@ -27,4 +28,4 @@ tests/ui_smoke.gd
 headless project startup
 ```
 
-Art uses deterministic draw primitives with a fixed 32px grid, preserving the backlog's placeholder-shape constraint while keeping silhouettes and states readable.
+Art uses deterministic draw primitives with a fixed 32px grid, preserving crisp placeholder pixel-art silhouettes while making customer, courier, carried parts, bench equipment, and completed-device states readable.

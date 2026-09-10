@@ -4,8 +4,9 @@ extends Node
 signal state_changed
 signal event_logged(message: String, severity: String)
 signal item_completed(item_id: String, item_type: String)
+signal interaction_ready(station_id: String)
 
-const SAVE_VERSION: int = 1
+const SAVE_VERSION: int = 2
 const MAX_OFFLINE_SECONDS: float = 8.0 * 60.0 * 60.0
 const TICK_SECONDS: float = 0.25
 const WORLD_ORIGIN: Vector2 = Vector2(32.0, 32.0)
@@ -34,6 +35,17 @@ var last_saved_at: float = 0.0
 var last_offline_report: String = ""
 var sales_today: float = 0.0
 var sales_this_week: float = 0.0
+var game_mode: String = "tiny_workshop"
+var tiny_player: Dictionary = {}
+var tiny_selected_job_id: String = ""
+var repair_shop: RepairShopSimulation
+var technician_xp: float = 0.0
+var technician_level: int = 1
+var repair_mastery: Dictionary = {}
+var owned_tools: Dictionary = {}
+var workshop_upgrades: Dictionary = {}
+var storage_capacity: int = 12
+var carrying_capacity: int = 1
 var _financial_day: int = 0
 
 var _job_counter: int = 0
@@ -45,6 +57,8 @@ var _job_timer: float = 8.0
 var _product_timer: float = 18.0
 var _contract_timer: float = 30.0
 var _simulation_accumulator: float = 0.0
+var _tiny_client_timer: float = 18.0
+var _tiny_request_index: int = 0
 
 const STATION_POSITIONS: Dictionary = {
 	"incoming_shelf": Vector2(112, 112),
@@ -83,9 +97,13 @@ func _ready() -> void:
 
 func initialize_for_tests() -> void:
 	_load_catalog()
-	new_game()
+	_new_legacy_game()
 
 func new_game() -> void:
+	_start_tiny_workshop()
+
+func _new_legacy_game() -> void:
+	game_mode = "legacy"
 	workers.clear()
 	stations.clear()
 	jobs.clear()
@@ -121,6 +139,86 @@ func new_game() -> void:
 		_create_repair_job()
 	_refresh_milestones()
 	state_changed.emit()
+
+func start_tiny_workshop() -> void:
+	_start_tiny_workshop()
+
+func initialize_tiny_workshop_for_tests() -> void:
+	_load_catalog()
+	_start_tiny_workshop()
+
+func _start_tiny_workshop() -> void:
+	game_mode = "tiny_workshop"
+	repair_shop = RepairShopSimulation.new(catalog)
+	repair_shop.event_logged.connect(_on_repair_shop_event)
+	repair_shop.interaction_ready.connect(_on_repair_shop_interaction)
+	repair_shop.reset()
+	workers.clear()
+	stations.clear()
+	jobs.clear()
+	contracts.clear()
+	deliveries.clear()
+	quality_hold.clear()
+	navigation_grid = WorkshopGrid.new(32, 22)
+	inventory = repair_shop.inventory
+	research = {"active_id": "", "completed": [], "progress": 0.0}
+	milestones = {}
+	money = repair_shop.money
+	reputation = repair_shop.reputation
+	knowledge = 0.0
+	current_era = 1
+	expansion_level = 1
+	simulation_time = 0.0
+	production_enabled = false
+	last_offline_report = "Tiny Workshop opened."
+	sales_today = 0.0
+	sales_this_week = 0.0
+	_financial_day = 0
+	_job_counter = 0
+	_worker_counter = 0
+	_station_counter = 0
+	_contract_counter = 0
+	_tiny_client_timer = 18.0
+	_tiny_request_index = 0
+	tiny_selected_job_id = ""
+	tiny_player = repair_shop.player
+	for station_data in [["incoming_shelf", Vector2(180, 190)], ["parts_shelf", Vector2(180, 460)], ["repair_bench_1", Vector2(570, 390)], ["outgoing_shelf", Vector2(900, 190)]]:
+		_add_station(str(station_data[0]), station_data[1])
+	_add_worker("founder", "Founder", Vector2(410, 610))
+	_sync_repair_shop_state()
+	_refresh_milestones()
+	state_changed.emit()
+
+func _on_repair_shop_event(message: String, severity: String) -> void:
+	event_logged.emit(message, severity)
+
+func _on_repair_shop_interaction(station_id: String) -> void:
+	interaction_ready.emit(station_id)
+
+func _sync_repair_shop_state() -> void:
+	if repair_shop == null:
+		return
+	money = repair_shop.money
+	reputation = repair_shop.reputation
+	jobs = repair_shop.jobs
+	inventory = repair_shop.inventory
+	deliveries = repair_shop.deliveries
+	milestones = repair_shop.milestones
+	tiny_player = repair_shop.player
+	tiny_selected_job_id = repair_shop.selected_job_id
+	technician_xp = repair_shop.technician_xp
+	technician_level = repair_shop.technician_level
+	repair_mastery = repair_shop.mastery
+	owned_tools = repair_shop.tools
+	workshop_upgrades = repair_shop.upgrades
+	storage_capacity = repair_shop.storage_capacity
+	carrying_capacity = repair_shop.carrying_capacity
+	if not workers.is_empty():
+		var founder: Dictionary = workers[0]
+		founder["position"] = tiny_player.get("position", founder.get("position", Vector2.ZERO))
+		founder["state"] = tiny_player.get("state", "IDLE")
+		founder["animation"] = "work" if tiny_player.get("state", "") == "WORKING" else "carry" if not str(tiny_player.get("carrying", "")).is_empty() else "walk" if tiny_player.get("state", "") == "MOVING" else "idle"
+		founder["carrying"] = tiny_player.get("carrying", "")
 
 func _load_catalog() -> void:
 	var path := "res://data/content.json"
@@ -266,6 +364,180 @@ func _create_repair_job() -> String:
 	jobs.append(job)
 	return job_id
 
+func _tiny_service_definition(service_id: String) -> Dictionary:
+	return repair_shop.get_service_definition(service_id) if repair_shop != null else {}
+
+func _create_tiny_client() -> String:
+	return repair_shop.create_customer() if repair_shop != null else ""
+
+func get_tiny_client_at(position: Vector2) -> Dictionary:
+	if repair_shop != null:
+		var index := 0
+		for job in repair_shop.jobs:
+			if job.get("state", "") != "client_waiting":
+				continue
+			var client_position := Vector2(150.0 + float(index % 3) * 78.0, 145.0)
+			if client_position.distance_to(position) <= 32.0:
+				return job
+			index += 1
+		return {}
+	var legacy_index := 0
+	for job in jobs:
+		if job.get("state", "") != "client_waiting":
+			continue
+		var client_position := Vector2(145.0 + float(legacy_index % 3) * 70.0, 150.0)
+		if client_position.distance_to(position) <= 30.0:
+			return job
+		legacy_index += 1
+	return {}
+
+func get_tiny_jobs() -> Array:
+	if repair_shop != null:
+		return repair_shop.jobs
+	var result: Array = []
+	for job in jobs:
+		if job.get("service_id", "") != "":
+			result.append(job)
+	return result
+
+func _tiny_job(job_id: String) -> Dictionary:
+	if repair_shop != null:
+		return repair_shop.get_job(job_id)
+	var job := _find_job(job_id)
+	if job.get("service_id", "") == "":
+		return {}
+	return job
+
+func accept_tiny_service(job_id: String) -> bool:
+	if repair_shop != null:
+		var accepted := repair_shop.accept_job(job_id)
+		_sync_repair_shop_state()
+		if accepted:
+			state_changed.emit()
+		return accepted
+	var job := _tiny_job(job_id)
+	if job.is_empty() or job.get("state", "") != "client_waiting":
+		return false
+	var cost := float(job.get("material_cost", 0.0))
+	if money < cost:
+		return false
+	money -= cost
+	job["state"] = "materials_delivering"
+	tiny_selected_job_id = job_id
+	var materials: Dictionary = job.get("required_materials", {})
+	for component_id in materials:
+		deliveries.append({"id":"tiny_delivery_%s_%s" % [job_id, component_id], "component_id":component_id, "quantity":int(materials[component_id]), "progress":0.0, "duration":7.0, "job_id":job_id})
+	event_logged.emit("Accepted %s. Materials ordered." % job.get("label", "repair"), "success")
+	state_changed.emit()
+	return true
+
+func decline_tiny_service(job_id: String) -> bool:
+	if repair_shop != null:
+		var declined := repair_shop.reject_job(job_id)
+		_sync_repair_shop_state()
+		if declined:
+			state_changed.emit()
+		return declined
+	var job := _tiny_job(job_id)
+	if job.is_empty() or job.get("state", "") != "client_waiting":
+		return false
+	job["state"] = "declined"
+	event_logged.emit("Declined %s." % job.get("label", "repair"), "info")
+	state_changed.emit()
+	return true
+
+func order_tiny_parts(component_id: String, quantity: int = 4) -> bool:
+	if repair_shop != null:
+		var ordered := repair_shop.order_parts(component_id, quantity)
+		_sync_repair_shop_state()
+		if ordered:
+			state_changed.emit()
+		return ordered
+	if _component_definition(component_id).is_empty() or quantity <= 0:
+		return false
+	var unit_cost := float(_component_definition(component_id).get("order_cost", 10.0))
+	var total_cost := unit_cost * quantity
+	if money < total_cost:
+		return false
+	money -= total_cost
+	deliveries.append({"id":"tiny_stock_delivery_%d" % int(simulation_time * 10.0), "component_id":component_id, "quantity":quantity, "progress":0.0, "duration":5.0, "job_id":""})
+	event_logged.emit("Ordered %d %s." % [quantity, _component_definition(component_id).get("name", component_id)], "info")
+	state_changed.emit()
+	return true
+
+func _component_definition(component_id: String) -> Dictionary:
+	if repair_shop != null:
+		return repair_shop.get_component_definition(component_id)
+	for definition in catalog.get("components", []):
+		if str(definition.get("id", "")) == component_id:
+			return definition
+	return {}
+
+func collect_tiny_materials(job_id: String, component_ids: Array[String]) -> bool:
+	if repair_shop != null:
+		var requested := repair_shop.request_collect_parts(job_id)
+		_sync_repair_shop_state()
+		if requested:
+			state_changed.emit()
+		return requested
+	var job := _tiny_job(job_id)
+	if job.is_empty() or job.get("state", "") not in ["materials_ready", "materials_partial"]:
+		return false
+	if component_ids.is_empty():
+		return false
+	tiny_selected_job_id = job_id
+	tiny_player["pending_action"] = {"type":"collect", "job_id":job_id, "components":component_ids}
+	tiny_player["target"] = _tiny_station_position("parts_shelf") + Vector2(80, 55)
+	tiny_player["state"] = "MOVING_TO_PICKUP"
+	return true
+
+func start_tiny_repair(job_id: String) -> bool:
+	if repair_shop != null:
+		var methods := repair_shop.get_diagnostic_methods(job_id)
+		var method_id := "visual_inspection"
+		if not methods.is_empty():
+			method_id = str(methods[0].get("id", method_id))
+		var requested := repair_shop.request_start_diagnosis(job_id, method_id)
+		_sync_repair_shop_state()
+		if requested:
+			state_changed.emit()
+		return requested
+	var job := _tiny_job(job_id)
+	if job.is_empty() or job.get("state", "") != "materials_collected":
+		return false
+	tiny_selected_job_id = job_id
+	tiny_player["pending_action"] = {"type":"start_repair", "job_id":job_id}
+	tiny_player["target"] = _tiny_station_position("repair_bench_1") + Vector2(-40, 70)
+	tiny_player["state"] = "MOVING_TO_STATION"
+	return true
+
+func deliver_tiny_repair(job_id: String) -> bool:
+	if repair_shop != null:
+		var requested := repair_shop.request_delivery(job_id)
+		_sync_repair_shop_state()
+		if requested:
+			state_changed.emit()
+		return requested
+	var job := _tiny_job(job_id)
+	if job.is_empty() or job.get("state", "") != "ready_for_delivery":
+		return false
+	tiny_selected_job_id = job_id
+	tiny_player["pending_action"] = {"type":"deliver", "job_id":job_id}
+	tiny_player["target"] = _tiny_station_position("outgoing_shelf") + Vector2(-70, 65)
+	tiny_player["state"] = "MOVING_TO_DROPOFF"
+	return true
+
+func move_tiny_player_to(position: Vector2) -> void:
+	if repair_shop != null:
+		repair_shop.move_player_to(position)
+		_sync_repair_shop_state()
+		return
+	if not str(tiny_player.get("working_job_id", "")).is_empty():
+		return
+	tiny_player["pending_action"] = ""
+	tiny_player["target"] = position.clamp(Vector2(60, 80), Vector2(940, 650))
+	tiny_player["state"] = "MOVING"
+
 func _create_product(product_id: String = "temperature_sensor") -> String:
 	var definition := _product_definition(product_id)
 	if definition.is_empty():
@@ -316,6 +588,9 @@ func advance(delta_seconds: float) -> void:
 		state_changed.emit()
 
 func _simulate_tick(delta_seconds: float) -> void:
+	if game_mode == "tiny_workshop":
+		_simulate_tiny_tick(delta_seconds)
+		return
 	simulation_time += delta_seconds
 	var financial_day := int(simulation_time / 86400.0)
 	if financial_day > _financial_day:
@@ -350,6 +625,226 @@ func _simulate_tick(delta_seconds: float) -> void:
 	_process_deliveries(delta_seconds)
 	_process_contracts(delta_seconds)
 	_refresh_milestones()
+
+func _tiny_station_position(definition_id: String) -> Vector2:
+	for station in stations:
+		if station.get("definition_id", "") == definition_id:
+			return station.get("position", Vector2.ZERO)
+	return _position_for_station(definition_id)
+
+func _simulate_tiny_tick(delta_seconds: float) -> void:
+	if repair_shop == null:
+		return
+	repair_shop.advance(delta_seconds)
+	simulation_time = repair_shop.simulation_time
+	_sync_repair_shop_state()
+
+func _process_tiny_deliveries(delta_seconds: float) -> void:
+	for delivery in deliveries:
+		delivery["progress"] = min(1.0, float(delivery.get("progress", 0.0)) + delta_seconds / float(delivery.get("duration", 7.0)))
+	for delivery in deliveries.duplicate():
+		if float(delivery.get("progress", 0.0)) < 1.0:
+			continue
+		var component_id := str(delivery.get("component_id", ""))
+		var quantity := int(delivery.get("quantity", 0))
+		inventory[component_id] = int(inventory.get(component_id, 0)) + quantity
+		var job_id := str(delivery.get("job_id", ""))
+		if not job_id.is_empty():
+			var job := _find_job(job_id)
+			if not job.is_empty():
+				var delivered: Dictionary = job.get("materials_delivered", {})
+				delivered[component_id] = int(delivered.get(component_id, 0)) + quantity
+				job["materials_delivered"] = delivered
+				if _tiny_materials_complete(job, "materials_delivered"):
+					job["state"] = "materials_ready"
+					event_logged.emit("Materials ready at Parts Shelf: %s." % job.get("label", "repair"), "success")
+		deliveries.erase(delivery)
+
+func _process_tiny_player(delta_seconds: float) -> void:
+	if tiny_player.is_empty():
+		return
+	var worker: Dictionary = {}
+	if not workers.is_empty():
+		worker = workers[0]
+	var position: Vector2 = tiny_player.get("position", Vector2.ZERO)
+	var target: Vector2 = tiny_player.get("target", position)
+	if position.distance_to(target) > 4.0:
+		tiny_player["position"] = position.move_toward(target, 150.0 * delta_seconds)
+		tiny_player["state"] = tiny_player.get("state", "MOVING")
+		if not worker.is_empty():
+			worker["position"] = tiny_player["position"]
+			worker["state"] = tiny_player["state"]
+			worker["animation"] = "carry" if not str(tiny_player.get("carrying", "")).is_empty() else "walk"
+		return
+	if not str(tiny_player.get("working_job_id", "")).is_empty():
+		tiny_player["state"] = "WORKING"
+		if not worker.is_empty():
+			worker["state"] = "WORKING"
+			worker["animation"] = "work"
+			worker["carrying"] = tiny_player.get("carrying", "")
+		return
+	var action: Variant = tiny_player.get("pending_action", "")
+	if action is Dictionary and not action.is_empty():
+		_resolve_tiny_player_action(action)
+	else:
+		tiny_player["state"] = "IDLE"
+		if not worker.is_empty():
+			worker["state"] = "IDLE"
+			worker["animation"] = "idle"
+	var carrying := str(tiny_player.get("carrying", ""))
+	if not worker.is_empty():
+		worker["position"] = tiny_player.get("position", worker.get("position", Vector2.ZERO))
+		worker["carrying"] = carrying
+
+func _resolve_tiny_player_action(action: Dictionary) -> void:
+	var job_id := str(action.get("job_id", ""))
+	var job := _tiny_job(job_id)
+	if job.is_empty():
+		tiny_player["pending_action"] = ""
+		return
+	match str(action.get("type", "")):
+		"collect":
+			var collected: Dictionary = job.get("collected_materials", {})
+			var delivered: Dictionary = job.get("materials_delivered", {})
+			for component_id in action.get("components", []):
+				var needed := int(job.get("required_materials", {}).get(component_id, 0)) - int(collected.get(component_id, 0))
+				var available: int = min(needed, min(int(inventory.get(component_id, 0)), int(delivered.get(component_id, 0)) - int(collected.get(component_id, 0))))
+				if available > 0:
+					inventory[component_id] = int(inventory.get(component_id, 0)) - available
+					collected[component_id] = int(collected.get(component_id, 0)) + available
+			job["collected_materials"] = collected
+			job["state"] = "materials_collected" if _tiny_materials_complete(job, "collected_materials") else "materials_partial"
+			tiny_player["carrying"] = job.get("visual_kind", "device_board")
+			tiny_selected_job_id = job_id
+			tiny_player["pending_action"] = ""
+			tiny_player["state"] = "IDLE"
+		"start_repair":
+			if job.get("state", "") != "materials_collected":
+				tiny_player["pending_action"] = ""
+				return
+			job["state"] = "diagnosing"
+			job["station_id"] = "repair_bench_1"
+			job["progress"] = 0.0
+			tiny_player["pending_action"] = ""
+			tiny_player["working_job_id"] = job_id
+			tiny_player["phase"] = "diagnosis"
+			tiny_player["state"] = "WORKING"
+			event_logged.emit("Diagnosis started: %s." % job.get("label", "repair"), "info")
+		"deliver":
+			if job.get("state", "") != "ready_for_delivery":
+				tiny_player["pending_action"] = ""
+				return
+			_finish_tiny_job(job)
+			tiny_player["pending_action"] = ""
+			tiny_player["working_job_id"] = ""
+			tiny_player["carrying"] = ""
+			tiny_player["state"] = "IDLE"
+
+func _tiny_materials_complete(job: Dictionary, field: String) -> bool:
+	var required: Dictionary = job.get("required_materials", {})
+	var current: Dictionary = job.get(field, {})
+	for component_id in required:
+		if int(current.get(component_id, 0)) < int(required[component_id]):
+			return false
+	return true
+
+func _process_tiny_work(delta_seconds: float) -> void:
+	var job := _tiny_job(str(tiny_player.get("working_job_id", "")))
+	if job.is_empty():
+		return
+	var phase := str(tiny_player.get("phase", "diagnosis"))
+	var definition := _tiny_service_definition(str(job.get("service_id", "")))
+	var duration := float(definition.get("diagnosis_duration", 4.0)) if phase == "diagnosis" else float(definition.get("repair_duration", 6.0))
+	job["progress"] = min(1.0, float(job.get("progress", 0.0)) + delta_seconds / max(0.1, duration))
+	if float(job.get("progress", 0.0)) < 1.0:
+		return
+	if phase == "diagnosis":
+		job["state"] = "repairing"
+		job["progress"] = 0.0
+		tiny_player["phase"] = "repair"
+		event_logged.emit("Diagnosis complete. Repair started: %s." % job.get("label", "repair"), "info")
+	else:
+		job["state"] = "ready_for_delivery"
+		job["progress"] = 1.0
+		tiny_player["working_job_id"] = ""
+		tiny_player["state"] = "IDLE"
+		event_logged.emit("Repair complete. Move device to Outcome Port." , "success")
+
+func _finish_tiny_job(job: Dictionary) -> void:
+	job["state"] = "completed"
+	job["station_id"] = "outgoing_shelf"
+	var reward := SimulationRules.calculate_job_reward(float(job.get("base_reward", 0.0)), float(job.get("quality", 0.9)))
+	money += reward
+	sales_today += reward
+	sales_this_week += reward
+	reputation = clamp(reputation + 0.1, 0.0, 100.0)
+	knowledge += 0.25
+	item_completed.emit(str(job.get("id", "")), "repair")
+	event_logged.emit("Client paid $%d for %s." % [int(reward), job.get("label", "repair")], "success")
+
+func get_tiny_progress_label() -> String:
+	if repair_shop != null:
+		return repair_shop.get_progress_label()
+	var job := _tiny_job(tiny_selected_job_id)
+	if job.is_empty():
+		return "Select client request at Front Desk."
+	match str(job.get("state", "")):
+		"materials_delivering": return "Waiting: materials en route to Parts Shelf."
+		"materials_ready": return "Materials ready: collect selected parts at shelf."
+		"materials_partial": return "Materials partly collected: return to Parts Shelf."
+		"materials_collected": return "Parts collected: choose repair at Repair Bench."
+		"diagnosing": return "Diagnosis in progress: %.0f%%" % (float(job.get("progress", 0.0)) * 100.0)
+		"repairing": return "Repair in progress: %.0f%%" % (float(job.get("progress", 0.0)) * 100.0)
+		"ready_for_delivery": return "Repair ready: move device to Outcome Port."
+		"completed": return "Service complete. Client reward received."
+	return "Select next action in workshop."
+
+func get_tiny_diagnostic_methods(job_id: String) -> Array:
+	return repair_shop.get_diagnostic_methods(job_id) if repair_shop != null else []
+
+func get_tiny_repair_methods(job_id: String) -> Array:
+	return repair_shop.get_repair_methods(job_id) if repair_shop != null else []
+
+func start_tiny_repair_method(job_id: String, method_id: String) -> bool:
+	if repair_shop == null:
+		return false
+	var started := repair_shop.start_repair_method(job_id, method_id)
+	_sync_repair_shop_state()
+	if started:
+		state_changed.emit()
+	return started
+
+func collect_tiny_device(job_id: String) -> bool:
+	if repair_shop == null:
+		return false
+	var collected := repair_shop.request_pickup_device(job_id)
+	_sync_repair_shop_state()
+	if collected:
+		state_changed.emit()
+	return collected
+
+func interact_tiny_station(station_id: String) -> bool:
+	if repair_shop == null:
+		return false
+	var requested := repair_shop.request_station_interaction(station_id)
+	_sync_repair_shop_state()
+	if requested:
+		state_changed.emit()
+	return requested
+
+func consume_tiny_interaction() -> String:
+	if repair_shop == null:
+		return ""
+	return repair_shop.consume_interaction()
+
+func purchase_tiny_upgrade(upgrade_id: String) -> bool:
+	if repair_shop == null:
+		return false
+	var purchased := repair_shop.purchase_upgrade(upgrade_id)
+	_sync_repair_shop_state()
+	if purchased:
+		state_changed.emit()
+	return purchased
 
 func _dispatch_incoming_jobs() -> void:
 	for job in jobs:
@@ -886,10 +1381,13 @@ func get_next_era_cost() -> float:
 	return float(catalog.get("eras", [])[current_era].get("cost", 0.0))
 
 func save_game() -> bool:
+	if game_mode == "tiny_workshop":
+		_sync_repair_shop_state()
 	last_saved_at = Time.get_unix_time_from_system()
 	var save_data := {
 		"save_version": SAVE_VERSION,
 		"game_version": "0.1.0",
+		"game_mode": game_mode,
 		"timestamp": last_saved_at,
 		"money": money,
 		"reputation": reputation,
@@ -911,6 +1409,11 @@ func save_game() -> bool:
 		"sales_today": sales_today,
 		"sales_this_week": sales_this_week,
 		"financial_day": _financial_day,
+		"tiny_client_timer": _tiny_client_timer,
+		"tiny_request_index": _tiny_request_index,
+		"tiny_selected_job_id": tiny_selected_job_id,
+		"tiny_player": _serialize_tiny_player(),
+		"repair_shop": repair_shop.serialize() if repair_shop != null else {},
 		"counters":{"job":_job_counter,"worker":_worker_counter,"station":_station_counter,"contract":_contract_counter}
 	}
 	var file := FileAccess.open("user://hardware_empire_save.json", FileAccess.WRITE)
@@ -947,9 +1450,14 @@ func migrate_save(data: Dictionary) -> Dictionary:
 		migrated["expansion_level"] = int(migrated.get("expansion_level", 1))
 		migrated["research"] = migrated.get("research", {"active_id":"", "completed":[], "progress":0.0})
 		migrated["deliveries"] = migrated.get("deliveries", [])
+		migrated["game_mode"] = migrated.get("game_mode", "legacy")
+	if version < 2:
+		migrated["save_version"] = 2
+		migrated["repair_shop"] = migrated.get("repair_shop", {})
 	return migrated
 
 func _money_from_save(data: Dictionary) -> void:
+	game_mode = str(data.get("game_mode", "legacy"))
 	money = float(data.get("money", 250.0))
 	reputation = float(data.get("reputation", 1.0))
 	knowledge = float(data.get("knowledge", 0.0))
@@ -975,6 +1483,25 @@ func _money_from_save(data: Dictionary) -> void:
 	_worker_counter = int(counters.get("worker", workers.size()))
 	_station_counter = int(counters.get("station", stations.size()))
 	_contract_counter = int(counters.get("contract", contracts.size()))
+	_tiny_client_timer = float(data.get("tiny_client_timer", 18.0))
+	_tiny_request_index = int(data.get("tiny_request_index", 0))
+	tiny_selected_job_id = str(data.get("tiny_selected_job_id", ""))
+	var raw_tiny_player: Dictionary = data.get("tiny_player", {})
+	if not raw_tiny_player.is_empty():
+		var raw_position: Dictionary = raw_tiny_player.get("position", {})
+		var raw_target: Dictionary = raw_tiny_player.get("target", raw_position)
+		raw_tiny_player["position"] = Vector2(float(raw_position.get("x", 410.0)), float(raw_position.get("y", 610.0)))
+		raw_tiny_player["target"] = Vector2(float(raw_target.get("x", 410.0)), float(raw_target.get("y", 610.0)))
+		tiny_player = raw_tiny_player
+	if game_mode == "tiny_workshop":
+		repair_shop = RepairShopSimulation.new(catalog)
+		repair_shop.event_logged.connect(_on_repair_shop_event)
+		repair_shop.interaction_ready.connect(_on_repair_shop_interaction)
+		var shop_data: Dictionary = data.get("repair_shop", {})
+		if shop_data.is_empty():
+			shop_data = {"money":money, "reputation":reputation, "inventory":inventory, "jobs":jobs, "deliveries":deliveries, "selected_job_id":tiny_selected_job_id, "player":_serialize_tiny_player()}
+		repair_shop.restore(shop_data)
+		_sync_repair_shop_state()
 
 func _serialize_workers() -> Array:
 	var result: Array = []
@@ -986,6 +1513,14 @@ func _serialize_workers() -> Array:
 		copy["target"] = {"x":target.x,"y":target.y}
 		result.append(copy)
 	return result
+
+func _serialize_tiny_player() -> Dictionary:
+	var copy := tiny_player.duplicate(true)
+	var position: Vector2 = copy.get("position", Vector2.ZERO)
+	var target: Vector2 = copy.get("target", position)
+	copy["position"] = {"x":position.x,"y":position.y}
+	copy["target"] = {"x":target.x,"y":target.y}
+	return copy
 
 func _serialize_stations() -> Array:
 	var result: Array = []
@@ -1019,6 +1554,9 @@ func _deserialize_stations(raw: Array) -> Array:
 	return result
 
 func _apply_offline_progress(seconds: float) -> void:
+	if game_mode == "tiny_workshop":
+		last_offline_report = "Solo workshop paused. No offline work performed."
+		return
 	if seconds < 1.0:
 		last_offline_report = "No offline time elapsed."
 		return
@@ -1037,6 +1575,8 @@ func _apply_offline_progress(seconds: float) -> void:
 	event_logged.emit(last_offline_report, "info")
 
 func get_summary() -> Dictionary:
+	if game_mode == "tiny_workshop" and repair_shop != null:
+		return repair_shop.get_summary()
 	var active_jobs := 0
 	var completed_jobs := 0
 	for job in jobs:

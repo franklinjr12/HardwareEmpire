@@ -11,6 +11,13 @@
     {"id":"production_operator","name":"Production Operator","color":"#a3e635","skill":1.0},
     {"id":"process_engineer","name":"Process Engineer","color":"#fbbf24","skill":1.3}
   ],
+  "customers": [
+    {"id":"student","name":"Maya","archetype":"Student"},
+    {"id":"home_user","name":"Rafael","archetype":"Home user"},
+    {"id":"gamer","name":"João","archetype":"Gamer"},
+    {"id":"hobbyist","name":"Lia","archetype":"Hobbyist"},
+    {"id":"shop_owner","name":"Nina","archetype":"Small shop owner"}
+  ],
   "stations": [
     {"id":"incoming_shelf","name":"Incoming Shelf","kind":"shelf","zone":"reception","process":"incoming","era":1,"cost":0,"duration":1.0,"capacity":12,"color":"#64748b"},
     {"id":"parts_shelf","name":"Parts Shelf","kind":"storage","zone":"storage","process":"component_pick","era":1,"cost":0,"duration":1.0,"capacity":20,"color":"#a16207"},
@@ -50,10 +57,17 @@
     {"id":"infrastructure_controller","name":"Infrastructure Controller","era":6,"units":12,"reward":12000,"deadline":720}
   ],
   "components": [
-    {"id":"microcontroller","name":"Microcontrollers","color":"#60a5fa"},
-    {"id":"sensor","name":"Sensors","color":"#34d399"},
-    {"id":"pcb","name":"PCBs","color":"#4ade80"},
-    {"id":"power_module","name":"Power Modules","color":"#fbbf24"}
+    {"id":"microcontroller","name":"Microcontrollers","short":"MCU","color":"#60a5fa","order_cost":12},
+    {"id":"sensor","name":"Sensors","short":"SNS","color":"#34d399","order_cost":9},
+    {"id":"pcb","name":"PCBs","short":"PCB","color":"#4ade80","order_cost":14},
+    {"id":"power_module","name":"Power Modules","short":"PWR","color":"#fbbf24","order_cost":11}
+  ],
+  "repair_services": [
+    {"id":"tiny_laptop_power","name":"Laptop power circuit","description":"Laptop shuts down under load. Inspect power rail and replace damaged board parts.","reported_problem":"Laptop suddenly shuts down when opening heavy apps.","device_type":"Laptop","possible_faults":["Damaged power module","Cracked PCB trace"],"materials":{"pcb":1,"power_module":1},"reward":112,"xp":18,"reputation":0.18,"difficulty":"Basic","mastery_category":"power_repair","diagnostic_methods":[{"id":"visual_inspection","name":"Visual inspection","duration":4.0},{"id":"multimeter_test","name":"Multimeter test","duration":2.8,"required_tool":"multimeter"}],"repair_methods":[{"id":"component_repair","name":"Repair component","cost":8.0,"duration":20.0,"success":0.9,"required_tool":"cheap_soldering_iron"},{"id":"board_replacement","name":"Replace board","cost":30.0,"duration":8.0,"success":0.99,"required_tool":"screwdriver_set"}],"visual_kind":"device_laptop"},
+    {"id":"tiny_console_input","name":"Console input repair","description":"Controller input is intermittent. Check signal path and restore damaged sensor contacts.","reported_problem":"Console controller loses input after a few minutes.","device_type":"Game console","possible_faults":["Worn sensor contact","Damaged PCB trace"],"materials":{"pcb":1,"sensor":1},"reward":104,"xp":16,"reputation":0.16,"difficulty":"Basic","mastery_category":"connector_repair","diagnosis_duration":3.5,"repair_duration":5.5,"visual_kind":"device_console"},
+    {"id":"tiny_tablet_charge","name":"Tablet charging port","description":"Tablet will not charge. Diagnose connector path and replace power components.","reported_problem":"Charging works only when cable is held at an angle.","device_type":"Tablet","possible_faults":["Worn charging contact","Failed power module"],"materials":{"sensor":1,"power_module":1},"reward":96,"xp":15,"reputation":0.15,"difficulty":"Basic","mastery_category":"charging_repair","diagnosis_duration":3.0,"repair_duration":5.0,"visual_kind":"device_tablet"},
+    {"id":"tiny_radio_audio","name":"Radio audio failure","description":"Portable radio powers on but produces no sound. Trace the signal path and restore output.","reported_problem":"Radio lights up but has gone silent.","device_type":"Radio","possible_faults":["Failed sensor contact","Cracked PCB trace"],"materials":{"pcb":1,"sensor":1},"reward":88,"xp":14,"reputation":0.14,"difficulty":"Basic","mastery_category":"audio_repair","diagnosis_duration":3.5,"repair_duration":5.5,"visual_kind":"device_radio"},
+    {"id":"tiny_desktop_cooling","name":"Desktop cooling repair","description":"Desktop overheats under load. Inspect the board and replace the failed power component.","reported_problem":"Desktop fan spins, but system powers off after ten minutes.","device_type":"Desktop PC","possible_faults":["Failed power module","Damaged PCB trace"],"materials":{"pcb":1,"power_module":1},"reward":126,"xp":20,"reputation":0.2,"difficulty":"Intermediate","mastery_category":"power_repair","diagnosis_duration":4.5,"repair_duration":7.0,"visual_kind":"device_desktop"}
   ],
   "eras": [
     {"id":1,"name":"Solo Repair Technician","cost":0,"description":"One room, one bench, one founder."},

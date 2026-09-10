@@ -15,5 +15,13 @@ func _run_smoke() -> void:
 		main_scene._open_screen(screen)
 		await process_frame
 	main_scene.queue_free()
+	game_state.start_tiny_workshop()
+	var tiny_scene := preload("res://scenes/tiny_workshop.tscn").instantiate()
+	root.add_child(tiny_scene)
+	await process_frame
+	tiny_scene._show_front_desk()
+	await process_frame
+	tiny_scene._close_panel()
+	tiny_scene.queue_free()
 	print("Hardware Empire UI smoke test passed")
 	quit(0)
