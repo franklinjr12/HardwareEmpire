@@ -21,7 +21,17 @@ func _run_smoke() -> void:
 	await process_frame
 	tiny_scene._show_front_desk()
 	await process_frame
+	assert(tiny_scene.ui_layer.get_node("HUDRoot/TopHUD") != null)
+	assert(tiny_scene.xp_bar != null)
+	for station in ["front_desk", "parts_shelf", "repair_bench_1", "outgoing_shelf"]:
+		tiny_scene._open_station(station)
+		await process_frame
+		assert(tiny_scene.panel.visible)
+	tiny_scene._show_upgrades()
+	assert(tiny_scene.panel.visible)
 	tiny_scene._close_panel()
+	assert(not tiny_scene.panel.visible)
+	assert(tiny_scene.world != null and tiny_scene.world.visible)
 	tiny_scene.queue_free()
 	print("Hardware Empire UI smoke test passed")
 	quit(0)

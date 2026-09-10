@@ -201,6 +201,8 @@ func _sync_repair_shop_state() -> void:
 	money = repair_shop.money
 	reputation = repair_shop.reputation
 	jobs = repair_shop.jobs
+	sales_today = repair_shop.sales_total
+	sales_this_week = repair_shop.sales_total
 	inventory = repair_shop.inventory
 	deliveries = repair_shop.deliveries
 	milestones = repair_shop.milestones

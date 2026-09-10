@@ -7,6 +7,23 @@ signal state_changed
 signal event_logged(message: String, severity: String)
 signal interaction_ready(station_id: String)
 
+signal sound_requested(event_id: String)
+
+const Layout = preload("res://scripts/simulation/era_one_layout.gd")
+const FIRST_CUSTOMER_DELAY_MIN := 3.0
+const FIRST_CUSTOMER_DELAY_MAX := 6.0
+const CUSTOMER_ARRIVAL_MIN := 15.0
+const CUSTOMER_ARRIVAL_MAX := 30.0
+const CUSTOMER_MOVE_DURATION := 2.0
+const SUPPLIER_TRAVEL_TIME := 7.0
+const COURIER_MOVE_DURATION := 1.5
+const COURIER_DROP_DURATION := 1.0
+const CUSTOMER_PICKUP_DELAY_MIN := 4.0
+const CUSTOMER_PICKUP_DELAY_MAX := 10.0
+const CUSTOMER_PICKUP_DURATION := 1.0
+const OUTBOUND_CAPACITY := 3
+var random := RandomNumberGenerator.new()
+
 const TICK_SECONDS: float = 0.25
 const MAX_JOBS: int = 3
 const BASE_STORAGE_CAPACITY: int = 12
@@ -14,6 +31,7 @@ const BASE_CARRY_CAPACITY: int = 1
 const XP_THRESHOLDS: Array[int] = [0, 100, 250, 450, 700]
 
 var catalog: Dictionary
+var sales_total := 0.0
 var money: float = 250.0
 var reputation: float = 1.0
 var technician_xp: float = 0.0
@@ -44,6 +62,7 @@ func _init(content_catalog: Dictionary = {}) -> void:
 	reset()
 
 func reset() -> void:
+	sales_total = 0.0
 	money = 250.0
 	reputation = 1.0
 	technician_xp = 0.0
@@ -62,15 +81,14 @@ func reset() -> void:
 	carrying_capacity = BASE_CARRY_CAPACITY
 	last_offline_report = "Solo repair workshop opened."
 	_accumulator = 0.0
-	_customer_timer = 18.0
+	random.seed = 1731
+	_customer_timer = random.randf_range(FIRST_CUSTOMER_DELAY_MIN, FIRST_CUSTOMER_DELAY_MAX)
 	_request_index = 0
 	_job_counter = 0
 	_delivery_counter = 0
-	player = {"position": Vector2(540, 600), "target": Vector2(540, 600), "state": "IDLE", "pending_action": {}, "working_job_id": "", "phase": "", "carrying": "", "carried_parts": 0, "interaction_ready": ""}
+	player = {"position": Layout.point("founder_start"), "target": Layout.point("founder_start"), "state": "IDLE", "pending_action": {}, "working_job_id": "", "phase": "", "carrying": "", "carried_parts": 0, "interaction_ready": ""}
 	for definition in catalog.get("components", []):
 		inventory[str(definition.get("id", ""))] = 0
-	for i in range(3):
-		create_customer()
 	_refresh_milestones()
 	state_changed.emit()
 
@@ -86,9 +104,11 @@ func advance(delta_seconds: float) -> void:
 func _simulate_tick(delta_seconds: float) -> void:
 	simulation_time += delta_seconds
 	_customer_timer -= delta_seconds
-	if _customer_timer <= 0.0 and _waiting_customer_count() < 3:
-		_customer_timer = 24.0
-		create_customer()
+	if _customer_timer <= 0.0:
+		_customer_timer = random.randf_range(CUSTOMER_ARRIVAL_MIN, CUSTOMER_ARRIVAL_MAX)
+		if _waiting_customer_count() < 3:
+			create_customer()
+	_process_customers(delta_seconds)
 	_process_deliveries(delta_seconds)
 	_process_player(delta_seconds)
 	_process_work(delta_seconds)
@@ -117,7 +137,9 @@ func create_customer() -> String:
 		"possible_faults": definition.get("possible_faults", ["Damaged component"]),
 		"actual_fault": "",
 		"visual_kind": str(definition.get("visual_kind", "device_board")),
-		"state": "client_waiting",
+		"state": "arriving",
+		"customer_state": "arriving", "customer_progress": 0.0, "waiting_slot": _free_waiting_slot(),
+		"visual_variant": (_job_counter - 1) % 6, "rewards_granted": false,
 		"required_materials": materials,
 		"reserved_materials": {},
 		"collected_materials": {},
@@ -135,13 +157,14 @@ func create_customer() -> String:
 		"created_at": simulation_time,
 		"station_id": ""
 	})
-	event_logged.emit("Customer arrived at Front Desk: %s." % job_id, "info")
+	sound_requested.emit("front_door")
+	event_logged.emit("%s is entering the shop." % customer.get("name", "Customer"), "info")
 	return job_id
 
 func _waiting_customer_count() -> int:
 	var count := 0
 	for job in jobs:
-		if job.get("state", "") == "client_waiting":
+		if job.get("state", "") in ["arriving", "client_waiting"]:
 			count += 1
 	return count
 
@@ -181,20 +204,22 @@ func storage_used() -> int:
 	for component_id in inventory:
 		total += int(inventory[component_id])
 	for delivery in deliveries:
+		if delivery.get("credited", false):
+			continue
 		total += int(delivery.get("quantity", 0))
 	return total
 
 func incoming_quantity(component_id: String) -> int:
 	var total := 0
 	for delivery in deliveries:
-		if str(delivery.get("component_id", "")) == component_id:
+		if str(delivery.get("component_id", "")) == component_id and not delivery.get("credited", false):
 			total += int(delivery.get("quantity", 0))
 	return total
 
 func _accepted_job_count() -> int:
 	var count := 0
 	for job in jobs:
-		if job.get("state", "") not in ["client_waiting", "declined", "completed"]:
+		if job.get("state", "") not in ["arriving", "client_waiting", "declined", "completed"]:
 			count += 1
 	return count
 
@@ -224,6 +249,9 @@ func accept_job(job_id: String) -> bool:
 	job["reserved_materials"] = reserved
 	job["parts_cost"] = missing_cost
 	job["state"] = "ready_for_parts" if _job_parts_reserved(job) else "waiting_for_parts"
+	job["customer_state"] = "leaving"
+	job["customer_progress"] = 0.0
+	sound_requested.emit("job_accepted")
 	selected_job_id = job_id
 	if job.get("state", "") == "waiting_for_parts":
 		for component_id in required:
@@ -252,6 +280,8 @@ func reject_job(job_id: String) -> bool:
 	if job.is_empty() or job.get("state", "") != "client_waiting":
 		return false
 	job["state"] = "declined"
+	job["customer_state"] = "leaving"
+	job["customer_progress"] = 0.0
 	event_logged.emit("Declined %s." % job.get("label", "repair"), "info")
 	return true
 
@@ -270,51 +300,64 @@ func order_parts(component_id: String, quantity: int) -> bool:
 
 func _place_delivery(component_id: String, quantity: int, job_id: String) -> void:
 	_delivery_counter += 1
-	deliveries.append({"id":"delivery_%d" % _delivery_counter, "component_id":component_id, "quantity":quantity, "progress":0.0, "duration":6.0 if job_id.is_empty() else 7.0, "job_id":job_id})
+	deliveries.append({"id":"delivery_%d" % _delivery_counter, "component_id":component_id, "quantity":quantity, "progress":0.0, "duration":SUPPLIER_TRAVEL_TIME, "state":"in_transit", "credited":false, "job_id":job_id})
 
 func request_collect_parts(job_id: String) -> bool:
+	if _busy():
+		return false
+	for other in jobs:
+		if other.get("state", "") in ["diagnosing", "awaiting_repair_choice", "repairing", "ready_for_pickup"]:
+			return false
 	var job := get_job(job_id)
-	if job.is_empty() or job.get("state", "") not in ["ready_for_parts", "parts_partial"]:
+	if job.is_empty() or job.get("state", "") not in ["ready_for_parts", "parts_partial"] or not str(player.get("carrying", "")).is_empty():
 		return false
 	selected_job_id = job_id
-	_queue_player_action({"type":"collect_parts", "job_id":job_id}, Vector2(160, 430))
+	_queue_player_action({"type":"collect_parts", "job_id":job_id}, Layout.point("parts_shelf"))
 	return true
 
 func request_start_diagnosis(job_id: String, method_id: String = "visual_inspection") -> bool:
+	if _busy():
+		return false
 	var job := get_job(job_id)
 	if job.is_empty() or job.get("state", "") != "parts_collected" or not _diagnostic_method_available(job_id, method_id):
 		return false
+	for other in jobs:
+		if other.get("state", "") in ["diagnosing", "awaiting_repair_choice", "repairing", "ready_for_pickup"]:
+			return false
 	selected_job_id = job_id
-	_queue_player_action({"type":"start_diagnosis", "job_id":job_id, "method_id":method_id}, Vector2(540, 560))
+	_queue_player_action({"type":"start_diagnosis", "job_id":job_id, "method_id":method_id}, Layout.point("repair_bench"))
 	return true
 
 func request_pickup_device(job_id: String) -> bool:
-	var job := get_job(job_id)
-	if job.is_empty() or job.get("state", "") != "ready_for_pickup":
+	if _busy():
 		return false
-	_queue_player_action({"type":"pickup_device", "job_id":job_id}, Vector2(540, 560))
+	var job := get_job(job_id)
+	if job.is_empty() or job.get("state", "") != "ready_for_pickup" or not str(player.get("carrying", "")).is_empty():
+		return false
+	_queue_player_action({"type":"pickup_device", "job_id":job_id}, Layout.point("repair_bench"))
 	return true
 
 func request_delivery(job_id: String) -> bool:
+	if _busy():
+		return false
 	var job := get_job(job_id)
-	if job.is_empty() or job.get("state", "") != "ready_for_delivery":
+	if job.is_empty() or job.get("state", "") != "ready_for_delivery" or outbound_count() >= OUTBOUND_CAPACITY or player.get("carried_job_id", "") != job_id:
 		return false
 	selected_job_id = job_id
-	_queue_player_action({"type":"deliver_job", "job_id":job_id}, Vector2(870, 210))
+	_queue_player_action({"type":"deliver_job", "job_id":job_id}, Layout.point("pickup_founder"))
 	return true
 
 func request_station_interaction(station_id: String) -> bool:
-	var targets := {"front_desk":Vector2(180, 260), "parts_shelf":Vector2(160, 430), "repair_bench_1":Vector2(540, 560), "outgoing_shelf":Vector2(870, 210)}
-	if not targets.has(station_id):
+	if not Layout.STATIONS.has(station_id) or _busy():
 		return false
-	_queue_player_action({"type":"open_station", "station_id":station_id}, targets[station_id])
+	_queue_player_action({"type":"open_station", "station_id":station_id}, Layout.point(Layout.STATIONS[station_id]))
 	return true
 
 func move_player_to(position: Vector2) -> void:
 	if not str(player.get("working_job_id", "")).is_empty():
 		return
 	player["pending_action"] = {}
-	player["target"] = position.clamp(Vector2(70, 90), Vector2(980, 650))
+	player["target"] = position.clamp(Layout.FOUNDER_AREA.position, Layout.FOUNDER_AREA.end)
 	player["state"] = "MOVING"
 
 func consume_interaction() -> String:
@@ -328,28 +371,53 @@ func _queue_player_action(action: Dictionary, target: Vector2) -> void:
 	player["state"] = "MOVING"
 
 func _process_deliveries(delta_seconds: float) -> void:
+	var active: Dictionary = {}
 	for delivery in deliveries:
-		delivery["progress"] = min(1.0, float(delivery.get("progress", 0.0)) + delta_seconds / max(0.1, float(delivery.get("duration", 7.0))))
-	for delivery in deliveries.duplicate():
-		if float(delivery.get("progress", 0.0)) < 1.0:
-			continue
-		var component_id := str(delivery.get("component_id", ""))
-		var quantity := int(delivery.get("quantity", 0))
-		inventory[component_id] = int(inventory.get(component_id, 0)) + quantity
-		var job_id := str(delivery.get("job_id", ""))
-		if not job_id.is_empty():
-			var job := get_job(job_id)
-			if not job.is_empty():
-				var reserved: Dictionary = job.get("reserved_materials", {})
-				reserved[component_id] = int(reserved.get(component_id, 0)) + quantity
-				reserved_inventory[component_id] = int(reserved_inventory.get(component_id, 0)) + quantity
-				job["reserved_materials"] = reserved
-				if _job_parts_reserved(job):
-					job["state"] = "ready_for_parts"
-					event_logged.emit("Parts arrived at Parts Storage: %s." % job.get("label", "repair"), "success")
+		if delivery.get("state", "in_transit") != "in_transit":
+			active = delivery
 		else:
-			event_logged.emit("Delivery arrived at Parts Storage: %s x%d." % [get_component_name(component_id), quantity], "success")
-		deliveries.erase(delivery)
+			delivery["progress"] = minf(1.0, float(delivery.get("progress", 0.0)) + delta_seconds / SUPPLIER_TRAVEL_TIME)
+	if active.is_empty():
+		for delivery in deliveries:
+			if float(delivery.get("progress", 0.0)) >= 1.0 - 0.000001:
+				delivery["state"] = "courier_arriving"
+				delivery["progress"] = 0.0
+				sound_requested.emit("service_door")
+				return
+		return
+	var duration := COURIER_DROP_DURATION if active.state == "delivering" else COURIER_MOVE_DURATION
+	active["progress"] = minf(1.0, float(active.progress) + delta_seconds / duration)
+	if float(active.progress) < 1.0 - 0.000001:
+		return
+	active["progress"] = 0.0
+	match str(active.state):
+		"courier_arriving": active["state"] = "delivering"
+		"delivering":
+			_credit_delivery(active)
+			active["state"] = "courier_leaving"
+		"courier_leaving": deliveries.erase(active)
+
+func _credit_delivery(delivery: Dictionary) -> void:
+	if delivery.get("credited", false):
+		return
+	delivery["credited"] = true
+	sound_requested.emit("package_delivery")
+	var component_id := str(delivery.get("component_id", ""))
+	var quantity := int(delivery.get("quantity", 0))
+	inventory[component_id] = int(inventory.get(component_id, 0)) + quantity
+	var job_id := str(delivery.get("job_id", ""))
+	if not job_id.is_empty():
+		var job := get_job(job_id)
+		if not job.is_empty():
+			var reserved: Dictionary = job.get("reserved_materials", {})
+			reserved[component_id] = int(reserved.get(component_id, 0)) + quantity
+			reserved_inventory[component_id] = int(reserved_inventory.get(component_id, 0)) + quantity
+			job["reserved_materials"] = reserved
+			if _job_parts_reserved(job):
+				job["state"] = "ready_for_parts"
+				event_logged.emit("Parts arrived at Parts Storage: %s." % job.get("label", "repair"), "success")
+	else:
+		event_logged.emit("Delivery arrived at Parts Storage: %s x%d." % [get_component_name(component_id), quantity], "success")
 
 func _process_player(delta_seconds: float) -> void:
 	var position: Vector2 = player.get("position", Vector2.ZERO)
@@ -394,6 +462,7 @@ func _resolve_player_action(action: Dictionary) -> void:
 			if _materials_complete(job, "collected_materials"):
 				job["state"] = "parts_collected"
 				player["carrying"] = "parts_bundle"
+				player["carried_job_id"] = job_id
 				player["carried_parts"] = _sum_materials(collected)
 				selected_job_id = job_id
 			else:
@@ -412,16 +481,22 @@ func _resolve_player_action(action: Dictionary) -> void:
 			player["state"] = "WORKING"
 			event_logged.emit("Diagnosis started at Repair Bench: %s." % job.get("label", "repair"), "info")
 		"pickup_device":
-			if job.is_empty() or job.get("state", "") != "ready_for_pickup":
+			if job.is_empty() or job.get("state", "") != "ready_for_pickup" or not str(player.get("carrying", "")).is_empty():
 				return
 			job["state"] = "ready_for_delivery"
 			player["carrying"] = "device"
+			player["carried_job_id"] = job_id
 			player["carried_parts"] = 0
 			event_logged.emit("Device collected. Carry it to Outbound Desk.", "success")
 		"deliver_job":
-			if job.is_empty() or job.get("state", "") != "ready_for_delivery":
+			if job.is_empty() or job.get("state", "") != "ready_for_delivery" or outbound_count() >= OUTBOUND_CAPACITY or player.get("carried_job_id", "") != job_id:
 				return
-			_finish_job(job)
+			job["state"] = "waiting_for_customer_pickup"
+			job["pickup_timer"] = random.randf_range(CUSTOMER_PICKUP_DELAY_MIN, CUSTOMER_PICKUP_DELAY_MAX)
+			job["outbound_slot"] = _free_outbound_slot(job_id)
+			player["carrying"] = ""
+			player["carried_job_id"] = ""
+			event_logged.emit("Device placed at Customer Pickup. Customer notified.", "info")
 
 func _materials_complete(job: Dictionary, field: String) -> bool:
 	var required: Dictionary = job.get("required_materials", {})
@@ -471,6 +546,7 @@ func _process_work(delta_seconds: float) -> void:
 		player["working_job_id"] = ""
 		player["phase"] = ""
 		player["state"] = "IDLE"
+		sound_requested.emit("repair_finished")
 		event_logged.emit("Repair complete. Collect device at Repair Bench.", "success")
 
 func _diagnostic_method_available(job_id: String, method_id: String) -> bool:
@@ -506,7 +582,7 @@ func get_repair_methods(job_id: String) -> Array:
 
 func start_repair_method(job_id: String, method_id: String) -> bool:
 	var job := get_job(job_id)
-	if job.is_empty() or job.get("state", "") != "awaiting_repair_choice":
+	if job.is_empty() or job.get("state", "") != "awaiting_repair_choice" or _busy() or player.position.distance_to(Layout.point("repair_bench")) > 5.0:
 		return false
 	for method in get_repair_methods(job_id):
 		if str(method.get("id", "")) != method_id:
@@ -527,24 +603,28 @@ func start_repair_method(job_id: String, method_id: String) -> bool:
 		player["working_job_id"] = job_id
 		player["phase"] = "repair"
 		player["state"] = "WORKING"
+		sound_requested.emit("repair_loop")
 		event_logged.emit("Repair started: %s." % method.get("name", method_id), "info")
 		return true
 	return false
 
 func _finish_job(job: Dictionary) -> void:
+	if job.get("rewards_granted", false) or job.get("state", "") != "customer_collecting":
+		return
+	job["rewards_granted"] = true
 	job["state"] = "completed"
 	job["station_id"] = "outgoing_shelf"
-	player["carrying"] = ""
-	player["carried_parts"] = 0
-	player["state"] = "IDLE"
+	sound_requested.emit("customer_pickup")
+	sound_requested.emit("payment_received")
 	var quality: float = clamp(float(job.get("repair_success", 0.9)), 0.45, 1.0)
 	var reward: float = round(float(job.get("reward", 100.0)) * quality)
 	money += reward
+	sales_total += reward
 	reputation += float(job.get("reputation_reward", 0.15))
 	add_xp(int(job.get("xp_reward", 15)))
 	var category := str(job.get("mastery_category", "general_repair"))
 	mastery[category] = int(mastery.get(category, 0)) + 1
-	event_logged.emit("Client paid $%d. XP +%d, reputation +%.2f." % [int(reward), int(job.get("xp_reward", 15)), float(job.get("reputation_reward", 0.15))], "success")
+	event_logged.emit("%s collected device. +$%d  +%d XP  +%.2f REP." % [job.get("customer_name", "Customer"), int(reward), int(job.get("xp_reward", 15)), float(job.get("reputation_reward", 0.15))], "success")
 
 func add_xp(amount: int) -> void:
 	technician_xp += max(0, amount)
@@ -552,6 +632,8 @@ func add_xp(amount: int) -> void:
 	while technician_level < XP_THRESHOLDS.size() and technician_xp >= float(XP_THRESHOLDS[technician_level]):
 		technician_level += 1
 	if technician_level > old_level:
+		sound_requested.emit("level_up")
+		event_logged.emit("LEVEL UP — Technician %d" % technician_level, "success")
 		if technician_level >= 2:
 			tools["multimeter"] = true
 			event_logged.emit("Technician Level %d: Basic Multimeter unlocked." % technician_level, "success")
@@ -595,7 +677,9 @@ func _completed_count() -> int:
 func get_progress_label() -> String:
 	var job := get_job(selected_job_id)
 	if job.is_empty():
-		return "Walk to Front Desk: inspect waiting customer."
+		for candidate in jobs:
+			if candidate.state == "client_waiting": return "Inspect %s at the Front Desk." % candidate.customer_name
+		return "A customer is entering the shop." if _waiting_customer_count() > 0 else "Shop ready. New customers arrive throughout the day."
 	match str(job.get("state", "")):
 		"waiting_for_parts": return "Waiting for parts delivery: %s." % job.get("label", "repair")
 		"ready_for_parts": return "Walk to Parts Storage: collect job bundle."
@@ -605,7 +689,9 @@ func get_progress_label() -> String:
 		"awaiting_repair_choice": return "Diagnosis found %s: choose repair method." % job.get("actual_fault", "a fault")
 		"repairing": return "Repairing %s: %.0f%%." % [job.get("label", "device"), float(job.get("progress", 0.0)) * 100.0]
 		"ready_for_pickup": return "Repair complete: collect device from bench."
-		"ready_for_delivery": return "Carry repaired device to Outbound Desk."
+		"ready_for_delivery": return "Carry repaired device to Customer Pickup."
+		"waiting_for_customer_pickup": return "Waiting for %s to return." % job.get("customer_name", "Customer")
+		"customer_collecting": return "Customer collecting repaired device."
 		"completed": return "Job complete. Choose next customer or upgrade."
 	return "Walk to a highlighted workstation."
 
@@ -617,20 +703,24 @@ func get_summary() -> Dictionary:
 			completed += 1
 		elif job.get("state", "") != "declined":
 			active += 1
-	return {"cash":money, "reputation":reputation, "knowledge":0.0, "xp":technician_xp, "level":technician_level, "active_jobs":active, "completed_jobs":completed, "active_contracts":0, "production":completed, "bottlenecks":0, "era":"Solo Repair Technician", "expansion":1, "sales_today":0.0, "sales_this_week":0.0, "deliveries":deliveries.size(), "storage_used":storage_used(), "storage_capacity":storage_capacity, "carry_capacity":carrying_capacity}
+	return {"cash":money, "reputation":reputation, "knowledge":0.0, "xp":technician_xp, "level":technician_level, "active_jobs":active, "completed_jobs":completed, "active_contracts":0, "production":completed, "bottlenecks":0, "era":"Solo Repair Technician", "expansion":1, "sales_today":sales_total, "sales_this_week":sales_total, "deliveries":deliveries.size(), "storage_used":storage_used(), "storage_capacity":storage_capacity, "carry_capacity":carrying_capacity}
 
 func serialize() -> Dictionary:
 	var copy := {
-		"money":money, "reputation":reputation, "technician_xp":technician_xp, "technician_level":technician_level, "mastery":mastery, "tools":tools, "upgrades":upgrades, "inventory":inventory, "reserved_inventory":reserved_inventory, "deliveries":deliveries, "jobs":jobs, "milestones":milestones, "selected_job_id":selected_job_id, "simulation_time":simulation_time, "storage_capacity":storage_capacity, "carrying_capacity":carrying_capacity, "customer_timer":_customer_timer, "request_index":_request_index, "job_counter":_job_counter, "delivery_counter":_delivery_counter
+		"schema_version":3, "sales_total":sales_total, "random_state":str(random.state), "accumulator":_accumulator, "money":money, "reputation":reputation, "technician_xp":technician_xp, "technician_level":technician_level, "mastery":mastery, "tools":tools, "upgrades":upgrades, "inventory":inventory, "reserved_inventory":reserved_inventory, "deliveries":deliveries, "jobs":jobs, "milestones":milestones, "selected_job_id":selected_job_id, "simulation_time":simulation_time, "storage_capacity":storage_capacity, "carrying_capacity":carrying_capacity, "customer_timer":_customer_timer, "request_index":_request_index, "job_counter":_job_counter, "delivery_counter":_delivery_counter
 	}
 	var player_copy: Dictionary = player.duplicate(true)
 	for key in ["position", "target"]:
 		var value: Vector2 = player_copy.get(key, Vector2.ZERO)
 		player_copy[key] = {"x":value.x, "y":value.y}
 	copy["player"] = player_copy
-	return copy
+	return copy.duplicate(true)
 
-func restore(data: Dictionary) -> void:
+func restore(source: Dictionary) -> void:
+	var data := source.duplicate(true)
+	sales_total = float(data.get("sales_total", 0.0))
+	_accumulator = float(data.get("accumulator", 0.0))
+	random.state = int(data.get("random_state", random.state))
 	money = float(data.get("money", 250.0))
 	reputation = float(data.get("reputation", 1.0))
 	technician_xp = float(data.get("technician_xp", 0.0))
@@ -644,6 +734,12 @@ func restore(data: Dictionary) -> void:
 	deliveries = data.get("deliveries", [])
 	jobs = data.get("jobs", [])
 	for job in jobs:
+		if not job.has("customer_state"):
+			job["customer_state"] = "waiting" if job.get("state", "") == "client_waiting" else "absent"
+			job["customer_progress"] = 0.0
+			job["waiting_slot"] = jobs.find(job) % 3
+			job["visual_variant"] = jobs.find(job) % 6
+			job["rewards_granted"] = job.get("state", "") == "completed"
 		if not job.has("reward"):
 			job["reward"] = float(job.get("base_reward", 100.0))
 		if not job.has("xp_reward"):
@@ -683,7 +779,77 @@ func restore(data: Dictionary) -> void:
 	_job_counter = int(data.get("job_counter", jobs.size()))
 	_delivery_counter = int(data.get("delivery_counter", deliveries.size()))
 	var raw_player: Dictionary = data.get("player", {})
-	player = raw_player.duplicate(true) if not raw_player.is_empty() else {"position":Vector2(540, 600), "target":Vector2(540, 600), "state":"IDLE", "pending_action":{}, "working_job_id":"", "phase":"", "carrying":"", "carried_parts":0, "interaction_ready":""}
+	player = raw_player.duplicate(true) if not raw_player.is_empty() else {"position":Layout.point("founder_start"), "target":Layout.point("founder_start"), "state":"IDLE", "pending_action":{}, "working_job_id":"", "phase":"", "carrying":"", "carried_parts":0, "interaction_ready":""}
 	for key in ["position", "target"]:
-		var raw: Dictionary = player.get(key, {"x":540.0, "y":600.0})
+		var raw: Variant = player.get(key, {"x":540.0, "y":600.0})
 		player[key] = Vector2(float(raw.get("x", 540.0)), float(raw.get("y", 600.0))) if raw is Dictionary else raw
+
+	if int(data.get("schema_version", 0)) < 3:
+		player["position"] = Layout.point("founder_start")
+		player["target"] = player.position
+		player["pending_action"] = {}
+		for job in jobs:
+			if job.get("state", "") in ["diagnosing", "repairing", "awaiting_repair_choice"]:
+				player["position"] = Layout.point("repair_bench")
+				player["target"] = player.position
+			if job.get("state", "") in ["ready_for_delivery", "parts_collected"]:
+				player["carried_job_id"] = job.id
+
+func _busy() -> bool:
+	return not str(player.get("working_job_id", "")).is_empty()
+
+func _free_waiting_slot() -> int:
+	for slot in range(3):
+		var occupied := false
+		for job in jobs:
+			if job.get("state", "") in ["arriving", "client_waiting"] and int(job.get("waiting_slot", -1)) == slot:
+				occupied = true
+		if not occupied: return slot
+	return 0
+
+func outbound_count() -> int:
+	var count := 0
+	for job in jobs:
+		if job.get("state", "") in ["waiting_for_customer_pickup", "customer_collecting"]: count += 1
+	return count
+
+func _free_outbound_slot(exclude: String) -> int:
+	for slot in range(OUTBOUND_CAPACITY):
+		var occupied := false
+		for job in jobs:
+			if job.id != exclude and job.get("state", "") in ["waiting_for_customer_pickup", "customer_collecting"] and int(job.get("outbound_slot", -1)) == slot: occupied = true
+		if not occupied: return slot
+	return 0
+
+func _process_customers(delta: float) -> void:
+	var pickup_busy := false
+	for job in jobs:
+		if job.get("customer_state", "absent") in ["returning", "collecting", "exiting"]: pickup_busy = true
+	for job in jobs:
+		var state := str(job.get("customer_state", "absent"))
+		if job.get("state", "") == "waiting_for_customer_pickup" and state == "absent":
+			job["pickup_timer"] = maxf(0.0, float(job.get("pickup_timer", 0.0)) - delta)
+			if float(job.pickup_timer) <= 0.0 and not pickup_busy:
+				job["customer_state"] = "returning"
+				job["customer_progress"] = 0.0
+				pickup_busy = true
+				sound_requested.emit("front_door")
+			continue
+		if state in ["absent", "waiting"]: continue
+		var duration := CUSTOMER_PICKUP_DURATION if state == "collecting" else CUSTOMER_MOVE_DURATION
+		job["customer_progress"] = minf(1.0, float(job.get("customer_progress", 0.0)) + delta / duration)
+		if float(job.customer_progress) < 1.0: continue
+		job["customer_progress"] = 0.0
+		match state:
+			"arriving":
+				job["customer_state"] = "waiting"
+				job["state"] = "client_waiting"
+				sound_requested.emit("new_request")
+				event_logged.emit("%s is waiting at reception." % job.customer_name,"info")
+			"leaving", "exiting": job["customer_state"] = "absent"
+			"returning":
+				job["customer_state"] = "collecting"
+				job["state"] = "customer_collecting"
+			"collecting":
+				_finish_job(job)
+				job["customer_state"] = "exiting"

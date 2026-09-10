@@ -2,8 +2,25 @@ extends Node2D
 
 ## Physical Era-1 workshop presentation. No economy or job rules live here.
 
-const WORLD_RECT := Rect2(0, 68, 1040, 652)
-const PANEL_RECT := Rect2(1060, 84, 360, 620)
+const Layout = preload("res://scripts/simulation/era_one_layout.gd")
+const Art = preload("res://scripts/workshop_art.gd")
+const Entity = preload("res://scripts/workshop_entity.gd")
+var world: Node2D
+var front_door: Node2D
+var service_door: Node2D
+var entities: Node2D
+var xp_bar: ProgressBar
+var bench_progress: ProgressBar
+var bench_status: Label
+var delivery_status: Label
+var pickup_status: Label
+var xp_label: Label
+var storage_bar: ProgressBar
+var cash_delta: Label
+var old_cash := -1.0
+var old_level := 1
+var panel_signature := ""
+var entity_nodes := {}
 const FLOOR := Color("#182838")
 const FLOOR_LINE := Color("#294354")
 const INK := Color("#e8f1f2")
@@ -19,7 +36,7 @@ var ui_layer: CanvasLayer
 var money_label: Label
 var status_label: Label
 var notice_label: Label
-var panel: ColorRect
+var panel: PanelContainer
 var panel_title: Label
 var panel_body: RichTextLabel
 var panel_actions: VBoxContainer
@@ -34,6 +51,7 @@ func _ready() -> void:
 		return
 	if game_state.game_mode != "tiny_workshop":
 		game_state.start_tiny_workshop()
+	_build_world()
 	_build_ui()
 	game_state.state_changed.connect(_on_state_changed)
 	game_state.event_logged.connect(_on_event_logged)
@@ -49,92 +67,168 @@ func _process(delta: float) -> void:
 		_open_station(station_id)
 	notice_time = max(0.0, notice_time - delta)
 	_refresh_ui()
+	_update_entities()
 	queue_redraw()
 
 func _build_ui() -> void:
 	ui_layer = CanvasLayer.new()
-	ui_layer.layer = 5
+	ui_layer.name = "UI"
 	add_child(ui_layer)
-	var top_bar := ColorRect.new()
-	top_bar.position = Vector2.ZERO
-	top_bar.size = Vector2(1440, 68)
-	top_bar.color = Color("#101b29")
-	ui_layer.add_child(top_bar)
-	var title := Label.new()
-	title.text = "HARDWARE EMPIRE  /  SOLO REPAIR SHOP"
-	title.position = Vector2(24, 8)
-	title.add_theme_font_size_override("font_size", 20)
-	title.add_theme_color_override("font_color", ACCENT)
-	top_bar.add_child(title)
-	var subtitle := Label.new()
-	subtitle.text = "ERA 1  •  YOU ARE THE TECHNICIAN  •  WALK THE WORKFLOW"
-	subtitle.position = Vector2(26, 39)
-	subtitle.add_theme_font_size_override("font_size", 11)
-	subtitle.add_theme_color_override("font_color", MUTED)
-	top_bar.add_child(subtitle)
-	money_label = Label.new()
-	money_label.position = Vector2(510, 19)
-	money_label.add_theme_font_size_override("font_size", 15)
-	top_bar.add_child(money_label)
-	var upgrade_button := _make_button("UPGRADES", Callable(self, "_show_upgrades"), Vector2(1190, 16), Vector2(105, 34))
-	top_bar.add_child(upgrade_button)
-	var save_button := _make_button("SAVE", Callable(self, "_save_game"), Vector2(1305, 16), Vector2(82, 34))
-	top_bar.add_child(save_button)
-	status_label = Label.new()
-	status_label.position = Vector2(24, 734)
-	status_label.size = Vector2(1010, 28)
-	status_label.add_theme_font_size_override("font_size", 15)
-	status_label.add_theme_color_override("font_color", ACCENT)
-	ui_layer.add_child(status_label)
-	notice_label = Label.new()
-	notice_label.position = Vector2(24, 766)
-	notice_label.size = Vector2(1010, 28)
-	notice_label.add_theme_font_size_override("font_size", 13)
-	ui_layer.add_child(notice_label)
-	panel = ColorRect.new()
-	panel.position = PANEL_RECT.position
-	panel.size = PANEL_RECT.size
-	panel.color = Color("#172536f5")
-	panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	ui_layer.add_child(panel)
-	panel_title = Label.new()
-	panel_title.position = Vector2(20, 18)
-	panel_title.size = Vector2(320, 35)
-	panel_title.add_theme_font_size_override("font_size", 19)
-	panel_title.add_theme_color_override("font_color", ACCENT)
-	panel.add_child(panel_title)
+	var root := Control.new()
+	root.name = "HUDRoot"
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui_layer.add_child(root)
+	var top := PanelContainer.new()
+	top.name = "TopHUD"
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	root.add_child(top)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 24)
+	top.add_child(_margin(row))
+	var brand := VBoxContainer.new()
+	row.add_child(brand)
+	brand.add_child(_label("HARDWARE EMPIRE", 20, ACCENT))
+	brand.add_child(_label("Solo Repair Shop • Era 1", 12, MUTED))
+	var progression := VBoxContainer.new()
+	progression.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(progression)
+	xp_label = _label("LV 1", 14, INK)
+	progression.add_child(xp_label)
+	xp_bar = ProgressBar.new()
+	xp_bar.name = "XPProgress"
+	xp_bar.show_percentage = false
+	xp_bar.custom_minimum_size = Vector2(120, 10)
+	progression.add_child(xp_bar)
+	var economy := VBoxContainer.new()
+	row.add_child(economy)
+	money_label = _label("", 17, INK)
+	economy.add_child(money_label)
+	storage_bar = ProgressBar.new()
+	storage_bar.show_percentage = false
+	storage_bar.custom_minimum_size.y = 8
+	economy.add_child(storage_bar)
+	cash_delta = _label("", 13, GREEN)
+	economy.add_child(cash_delta)
+	row.add_child(_make_button("Upgrades", _show_upgrades, Vector2.ZERO, Vector2.ZERO))
+	row.add_child(_make_button("Save", _save_game, Vector2.ZERO, Vector2.ZERO))
+	var bottom := PanelContainer.new()
+	bottom.name = "ObjectiveBar"
+	root.add_child(bottom)
+	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom.offset_top = -48
+	status_label = _label("", 15, ACCENT)
+	bottom.add_child(_margin(status_label))
+	notice_label = _label("", 15, GREEN)
+	notice_label.name = "ToastLayer"
+	root.add_child(notice_label)
+	notice_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	notice_label.offset_top = -82
+	notice_label.offset_left = 24
+	panel = PanelContainer.new()
+	panel.name = "ContextDrawer"
+	root.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
+	panel.offset_left = -370
+	panel.offset_top = 112
+	panel.offset_bottom = -95
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(_margin(scroll))
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 12)
+	scroll.add_child(column)
+	panel_title = _label("", 22, ACCENT)
+	panel_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(panel_title)
+	column.add_child(_make_button("Close  ·  Esc", _close_panel, Vector2.ZERO, Vector2.ZERO))
+	column.add_child(HSeparator.new())
 	panel_body = RichTextLabel.new()
-	panel_body.position = Vector2(20, 62)
-	panel_body.size = Vector2(320, 210)
 	panel_body.bbcode_enabled = true
-	panel_body.add_theme_font_size_override("normal_font_size", 13)
-	panel_body.add_theme_color_override("default_color", INK)
-	panel.add_child(panel_body)
+	panel_body.fit_content = true
+	panel_body.scroll_active = false
+	panel_body.custom_minimum_size.y = 70
+	column.add_child(panel_body)
 	panel_actions = VBoxContainer.new()
-	panel_actions.position = Vector2(20, 285)
-	panel_actions.size = Vector2(320, 315)
-	panel_actions.add_theme_constant_override("separation", 6)
-	panel.add_child(panel_actions)
-	panel.visible = false
+	panel_actions.add_theme_constant_override("separation", 10)
+	column.add_child(panel_actions)
+	panel.hide()
 	_refresh_ui()
+
+func _margin(child: Control) -> MarginContainer:
+	var margin := MarginContainer.new()
+	for side in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 16)
+	margin.add_child(child)
+	return margin
+
+func _label(text: String, font_size: int, color: Color) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", color)
+	return label
 
 func _make_button(label: String, callback: Callable, position: Vector2, size: Vector2) -> Button:
 	var button := Button.new()
 	button.text = label
 	button.position = position
 	button.size = size
-	button.add_theme_font_size_override("font_size", 12)
+	button.add_theme_font_size_override("font_size", 15)
 	button.pressed.connect(callback)
 	return button
 
 func _refresh_ui() -> void:
 	if game_state == null:
 		return
-	var summary := game_state.get_summary()
-	money_label.text = "CASH $%d    LV %d  XP %.0f    REP %.1f    STORAGE %d/%d" % [int(summary.get("cash", 0.0)), int(summary.get("level", 1)), float(summary.get("xp", 0.0)), float(summary.get("reputation", 0.0)), int(summary.get("storage_used", 0)), int(summary.get("storage_capacity", 12))]
+	var shop := game_state.repair_shop
+	money_label.text = "$%d   •   Parts %d/%d" % [shop.money, shop.storage_used(), shop.storage_capacity]
+	if old_cash >= 0 and not is_equal_approx(old_cash, shop.money):
+		cash_delta.text = ("+$%d" if shop.money > old_cash else "-$%d") % abs(shop.money - old_cash)
+		cash_delta.modulate = GREEN if shop.money > old_cash else RED
+		var tween := create_tween()
+		tween.tween_property(cash_delta, "modulate:a", 0.0, 3.0)
+	old_cash = shop.money
+	var level := shop.technician_level
+	if level > old_level:
+		xp_label.modulate = ACCENT
+		create_tween().tween_property(xp_label,"modulate",Color.WHITE,2.5)
+	old_level = level
+	var base := shop.XP_THRESHOLDS[level - 1]
+	var capped := level == shop.XP_THRESHOLDS.size()
+	xp_bar.max_value = 1 if capped else shop.XP_THRESHOLDS[level] - base
+	xp_bar.value = 1 if capped else shop.technician_xp - base
+	xp_label.text = "LV %d  •  %s  •  REP %.1f" % [level, "MAX" if capped else "%d / %d XP" % [xp_bar.value, xp_bar.max_value], shop.reputation]
+	storage_bar.max_value = shop.storage_capacity
+	storage_bar.value = shop.storage_used()
+	storage_bar.modulate = RED if shop.storage_used() >= shop.storage_capacity - 2 else GREEN
+	if is_instance_valid(bench_progress):
+		var active := _job_in_state(["diagnosing", "repairing"])
+		bench_progress.value = float(active.get("progress",0.0))*100
+		bench_status.text = "%s — %.0f%%" % [str(active.get("state", "Workbench idle")).capitalize(),bench_progress.value]
+	if is_instance_valid(delivery_status):
+		delivery_status.text = ""
+		for delivery in shop.deliveries:
+			delivery_status.text += ("Supplier: %.0fs" % ((1-float(delivery.progress))*shop.SUPPLIER_TRAVEL_TIME) if delivery.get("state","in_transit") == "in_transit" else str(delivery.state).replace("_"," ").capitalize()) + "\n"
+	if is_instance_valid(pickup_status):
+		pickup_status.text = ""
+		for job in shop.jobs:
+			if job.state in ["waiting_for_customer_pickup", "customer_collecting"]:
+				pickup_status.text += "%s — %s\n%s\n\n" % [job.customer_name,job.label,"Returning in %.0fs" % job.get("pickup_timer",0.0) if job.customer_state == "absent" else str(job.customer_state).capitalize()]
 	status_label.text = game_state.get_tiny_progress_label()
 	if notice_time <= 0.0:
 		notice_label.text = ""
+	var signature := ""
+	for job in shop.jobs: signature += str(job.state) + str(job.get("customer_state", ""))
+	for delivery in shop.deliveries: signature += str(delivery.get("state", ""))
+	signature += str(shop.inventory)
+	if panel.visible and signature != panel_signature:
+		panel_signature = signature
+		match panel_context:
+			"front": _show_front_desk()
+			"storage": _show_parts_storage()
+			"bench": _show_repair_bench()
+			"outbound": _show_outbound()
 	if panel.visible and panel_context == "job":
 		var job := game_state._tiny_job(panel_job_id)
 		if job.is_empty() or job.get("state", "") in ["completed", "declined"]:
@@ -142,6 +236,7 @@ func _refresh_ui() -> void:
 
 func _on_state_changed() -> void:
 	_refresh_ui()
+	_update_entities()
 	queue_redraw()
 
 func _on_event_logged(message: String, severity: String) -> void:
@@ -156,16 +251,28 @@ func _save_game() -> void:
 		_on_event_logged("Game saved.", "success")
 
 func _clear_actions() -> void:
+	bench_progress = null
+	bench_status = null
+	delivery_status = null
+	pickup_status = null
 	for child in panel_actions.get_children():
+		panel_actions.remove_child(child)
 		child.queue_free()
 
-func _add_action(label: String, callback: Callable) -> void:
+func _add_action(label: String, callback: Callable) -> Button:
 	var button := Button.new()
 	button.text = label
 	button.custom_minimum_size = Vector2(0, 34)
-	button.add_theme_font_size_override("font_size", 12)
+	button.add_theme_font_size_override("font_size", 15)
 	button.pressed.connect(callback)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("654546") if "REJECT" in label else Color("365951")
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	button.add_theme_stylebox_override("normal", style)
+	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	panel_actions.add_child(button)
+	return button
 
 func _set_panel(title: String, body: String) -> void:
 	panel.visible = true
@@ -196,8 +303,7 @@ func _show_front_desk() -> void:
 		found = true
 		_add_action("INSPECT %s  •  %s" % [job.get("customer_name", "Customer"), job.get("label", "Repair")], Callable(self, "_show_job").bind(str(job.get("id", ""))))
 	if not found:
-		panel_body.text += "\n\nNo customer waiting. Keep workshop ready."
-	_add_action("CLOSE", Callable(self, "_close_panel"))
+		panel_body.text += "\n\nNo customers waiting. New customers arrive throughout the day."
 
 func _show_job(job_id: String) -> void:
 	var job := game_state._tiny_job(job_id)
@@ -205,9 +311,7 @@ func _show_job(job_id: String) -> void:
 		return
 	panel_context = "job"
 	panel_job_id = job_id
-	var parts := _format_materials(job.get("required_materials", {}))
-	var available := _format_availability(job.get("required_materials", {}))
-	_set_panel(str(job.get("label", "Repair request")), "Customer: %s (%s)\nDevice: %s\n\nReported problem:\n%s\n\nRequired parts: %s\n%s\nParts cost now: $%.0f\nExpected payment: $%.0f\nDifficulty: %s\nXP: %d" % [job.get("customer_name", "Customer"), job.get("customer_archetype", "Home user"), job.get("device_type", "electronics"), job.get("reported_problem", "Device needs repair."), parts, available, float(_job_missing_cost(job)), float(job.get("reward", 0.0)), job.get("difficulty", "Basic"), int(job.get("xp_reward", 0))])
+	_set_panel(str(job.get("label", "Repair request")), "[b]%s • %s[/b]\n%s\n\n[b]Reported problem[/b]\n%s\n\n[b]Required parts[/b]\n%s\n\n[b]Missing parts cost: $%.0f[/b]\n\nPayment up to $%.0f • +%d XP • +%.2f REP\n%s" % [job.customer_name,job.customer_archetype,job.device_type,job.reported_problem,_format_availability(job.required_materials),_job_missing_cost(job),job.reward,job.xp_reward,job.reputation_reward,job.difficulty])
 	_add_action("ACCEPT JOB", Callable(self, "_accept_job").bind(job_id))
 	_add_action("REJECT", Callable(self, "_reject_job").bind(job_id))
 	_add_action("BACK TO FRONT DESK", Callable(self, "_show_front_desk"))
@@ -228,15 +332,20 @@ func _show_parts_storage() -> void:
 	var body := "Capacity: %d / %d slots\n\n" % [int(summary.get("storage_used", 0)), int(summary.get("storage_capacity", 12))]
 	for definition in game_state.catalog.get("components", []):
 		var id := str(definition.get("id", ""))
-		body += "%s  stock %d  incoming %d  $%.0f\n" % [definition.get("name", id), int(game_state.inventory.get(id, 0)), _incoming(id), float(definition.get("order_cost", 0.0))]
+		body += "[b]%s[/b]\nStock %d • Reserved %d • Incoming %d • $%.0f each\n\n" % [definition.get("name", id), int(game_state.inventory.get(id, 0)), int(game_state.repair_shop.reserved_inventory.get(id, 0)), _incoming(id), float(definition.get("order_cost", 0.0))]
+	for delivery in game_state.repair_shop.deliveries:
+		body += "\nPackage: %s" % ("Supplier delivery %.0fs" % ((1.0-float(delivery.progress))*7.0) if delivery.get("state", "in_transit") == "in_transit" else str(delivery.state).replace("_", " ").capitalize())
 	_set_panel("PARTS STORAGE", body + "\nPre-stock common parts to reduce future trips and delivery waits.")
 	for definition in game_state.catalog.get("components", []):
 		var id := str(definition.get("id", ""))
-		_add_action("ORDER 2 %s  /  $%.0f" % [definition.get("name", id), float(definition.get("order_cost", 0.0)) * 2.0], Callable(self, "_order_parts").bind(id))
+		var order_button := _add_action("ORDER 2 %s  /  $%.0f" % [definition.get("name", id), float(definition.get("order_cost", 0.0)) * 2.0], Callable(self, "_order_parts").bind(id))
+		order_button.disabled = game_state.repair_shop.money < float(definition.get("order_cost", 0.0))*2 or game_state.repair_shop.storage_used()+2 > game_state.repair_shop.storage_capacity
+		order_button.tooltip_text = "Requires enough cash and two free storage slots." if order_button.disabled else "Supplier will deliver to the rear service entrance."
+	delivery_status = _label("", 14, BLUE)
+	panel_actions.add_child(delivery_status)
 	var ready := _job_in_state(["ready_for_parts", "parts_partial"])
 	if not ready.is_empty():
 		_add_action("TAKE PARTS FOR %s" % ready.get("label", "JOB"), Callable(self, "_collect_parts").bind(str(ready.get("id", ""))))
-	_add_action("CLOSE", Callable(self, "_close_panel"))
 
 func _order_parts(component_id: String) -> void:
 	if not game_state.order_tiny_parts(component_id, 2):
@@ -251,8 +360,8 @@ func _collect_parts(job_id: String) -> void:
 
 func _show_repair_bench() -> void:
 	panel_context = "bench"
-	var body := "Your workbench.\nDiagnosis creates a choice; repair method changes time, cost, and margin.\n\n"
-	var selected := game_state._tiny_job(game_state.tiny_selected_job_id)
+	var body := "One bench • Founder operated\n\n"
+	var selected := _job_in_state(["diagnosing","awaiting_repair_choice","repairing","ready_for_pickup"])
 	if not selected.is_empty():
 		body += "Selected: %s\nState: %s\n" % [selected.get("label", "Job"), selected.get("state", "Unknown")]
 		if selected.get("state", "") == "diagnosing":
@@ -262,6 +371,12 @@ func _show_repair_bench() -> void:
 		elif selected.get("state", "") == "repairing":
 			body += "Repair progress: %.0f%%" % (float(selected.get("progress", 0.0)) * 100.0)
 	_set_panel("REPAIR BENCH", body)
+	if not selected.is_empty() and selected.state in ["diagnosing", "repairing"]:
+		bench_status = _label("", 15, BLUE)
+		panel_actions.add_child(bench_status)
+		bench_progress = ProgressBar.new()
+		bench_progress.custom_minimum_size.y = 18
+		panel_actions.add_child(bench_progress)
 	var actionable := false
 	for job in game_state.get_tiny_jobs():
 		var state := str(job.get("state", ""))
@@ -272,14 +387,14 @@ func _show_repair_bench() -> void:
 		elif state == "awaiting_repair_choice":
 			actionable = true
 			for method in game_state.get_tiny_repair_methods(str(job.get("id", ""))):
+				panel_actions.add_child(_label("%.0f%% success • Tool: %s" % [float(method.get("success", 0.9))*100, str(method.get("required_tool", "None")).replace("_", " ")], 12, MUTED))
 				_add_action("REPAIR %s  •  $%.0f / %ss" % [method.get("name", "Repair"), float(method.get("cost", 0.0)), str(method.get("duration", 8.0))], Callable(self, "_start_repair_method").bind(str(job.get("id", "")), str(method.get("id", ""))))
 		elif state == "ready_for_pickup":
 			actionable = true
 			_add_action("PICK UP COMPLETED DEVICE", Callable(self, "_pickup_device").bind(str(job.get("id", ""))))
-	if not actionable:
+	if not actionable and selected.is_empty():
 		body += "\n\nNo job ready for a bench decision."
 		panel_body.text = body
-	_add_action("CLOSE", Callable(self, "_close_panel"))
 
 func _start_diagnosis(job_id: String, method_id: String) -> void:
 	if not game_state.repair_shop.request_start_diagnosis(job_id, method_id):
@@ -302,17 +417,19 @@ func _pickup_device(job_id: String) -> void:
 
 func _show_outbound() -> void:
 	panel_context = "outbound"
-	_set_panel("OUTBOUND DESK", "Completed devices leave workshop here.\nCarry each repaired device to customer pickup.")
+	_set_panel("CUSTOMER PICKUP", "Place repaired devices here. Payment follows customer collection.")
 	var ready := _job_in_state(["ready_for_delivery"])
 	if not ready.is_empty():
-		_add_action("DELIVER %s  /  RECEIVE $%.0f" % [ready.get("label", "DEVICE"), float(ready.get("reward", 0.0))], Callable(self, "_deliver_job").bind(str(ready.get("id", ""))))
+		_add_action("PLACE %s AT PICKUP" % ready.get("label", "DEVICE"), Callable(self, "_deliver_job").bind(str(ready.get("id", ""))))
 	else:
-		panel_body.text += "\n\nNo repaired device waiting."
-	_add_action("CLOSE", Callable(self, "_close_panel"))
+		panel_body.text += "\n\nNo carried device."
+	pickup_status = _label("", 15, INK)
+	pickup_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel_actions.add_child(pickup_status)
 
 func _deliver_job(job_id: String) -> void:
 	if not game_state.deliver_tiny_repair(job_id):
-		_on_event_logged("Carry repaired device to Outbound Desk first.", "warning")
+		_on_event_logged("Pickup blocked: carry repaired device; counter capacity 3.", "warning")
 	else:
 		_close_panel()
 
@@ -323,8 +440,8 @@ func _show_upgrades() -> void:
 	for definition in upgrade_defs:
 		var id := str(definition.id)
 		if not game_state.workshop_upgrades.get(id, false):
+			panel_actions.add_child(_label(str(definition.description), 13, MUTED))
 			_add_action("BUY %s  /  $%.0f" % [definition.name, definition.cost], Callable(self, "_buy_upgrade").bind(id))
-	_add_action("CLOSE", Callable(self, "_close_panel"))
 
 func _buy_upgrade(upgrade_id: String) -> void:
 	if not game_state.purchase_tiny_upgrade(upgrade_id):
@@ -345,11 +462,7 @@ func _job_in_state(states: Array) -> Dictionary:
 	return {}
 
 func _incoming(component_id: String) -> int:
-	var total := 0
-	for delivery in game_state.deliveries:
-		if str(delivery.get("component_id", "")) == component_id:
-			total += int(delivery.get("quantity", 0))
-	return total
+	return game_state.repair_shop.incoming_quantity(component_id)
 
 func _job_missing_cost(job: Dictionary) -> float:
 	var cost := 0.0
@@ -370,148 +483,169 @@ func _format_availability(materials: Dictionary) -> String:
 	var result: Array[String] = []
 	for component_id in materials:
 		var id := str(component_id)
-		result.append("%s: %d stock / %d incoming" % [game_state.repair_shop.get_component_name(id), game_state.repair_shop.available_stock(id), _incoming(id)])
+		result.append("%s • Need %d / Stock %d / Incoming %d" % [game_state.repair_shop.get_component_name(id), int(materials[id]), game_state.repair_shop.available_stock(id), _incoming(id)])
 	return "\n".join(result)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		if panel.visible:
+			_close_panel()
 			return
 		_handle_world_click(event.position)
 
-func _handle_world_click(position: Vector2) -> void:
-	if Rect2(80, 95, 280, 230).has_point(position):
-		game_state.interact_tiny_station("front_desk")
-	elif Rect2(80, 350, 270, 220).has_point(position):
-		game_state.interact_tiny_station("parts_shelf")
-	elif Rect2(370, 330, 340, 250).has_point(position):
-		game_state.interact_tiny_station("repair_bench_1")
-	elif Rect2(760, 95, 250, 230).has_point(position):
-		game_state.interact_tiny_station("outgoing_shelf")
-	else:
-		game_state.move_tiny_player_to(position)
+func _handle_world_click(screen_position: Vector2) -> void:
+	var point := world.to_local(screen_position)
+	for station in Layout.FOOTPRINTS:
+		if Layout.FOOTPRINTS[station].has_point(point):
+			game_state.interact_tiny_station(station)
+			return
+	for job in game_state.get_tiny_jobs():
+		if job.get("state", "") == "client_waiting" and Layout.customer_position(job).distance_to(point) < 30:
+			game_state.interact_tiny_station("front_desk")
+			return
+	if Layout.FOUNDER_AREA.has_point(point): game_state.move_tiny_player_to(point)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE and panel.visible:
 		_close_panel()
 
-func _draw() -> void:
-	draw_rect(WORLD_RECT, FLOOR)
-	_draw_floor()
-	_draw_zone(Rect2(80, 95, 280, 230), "FRONT DESK  /  CUSTOMERS", Color("#31556a"))
-	_draw_zone(Rect2(80, 350, 270, 220), "PARTS STORAGE", Color("#6e512c"))
-	_draw_zone(Rect2(370, 330, 340, 250), "REPAIR BENCH", Color("#704937"))
-	_draw_zone(Rect2(760, 95, 250, 230), "OUTBOUND DESK", Color("#315c49"))
-	_draw_customers()
-	_draw_storage()
-	_draw_bench()
-	_draw_outbound()
-	_draw_deliveries()
-	_draw_player()
+func _build_world() -> void:
+	world = Node2D.new()
+	world.name = "World"
+	add_child(world)
+	var environment := Node2D.new()
+	environment.name = "Environment"
+	world.add_child(environment)
+	var floor := Polygon2D.new()
+	floor.polygon = PackedVector2Array([Vector2(80,60),Vector2(850,60),Vector2(850,650),Vector2(80,650)])
+	floor.color = Color("898877")
+	environment.add_child(floor)
+	var floor_art := Sprite2D.new()
+	floor_art.name = "FloorArtwork"
+	floor_art.texture = load("res://assets/era_one/floor.png")
+	floor_art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	floor_art.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	floor_art.centered = false
+	floor_art.region_enabled = true
+	floor_art.region_rect = Rect2(0,0,3080,2360)
+	floor_art.scale = Vector2.ONE*0.25
+	floor_art.position = Vector2(80,60)
+	floor_art.modulate = Color("beb9a8")
+	environment.add_child(floor_art)
+	front_door = Node2D.new()
+	front_door.name = "FrontDoorArtwork"
+	front_door.position = Vector2(190,660)
+	front_door.add_child(Art.sprite("door",78))
+	environment.add_child(front_door)
+	service_door = Node2D.new()
+	service_door.name = "ServiceDoorArtwork"
+	service_door.position = Vector2(87,187)
+	service_door.add_child(Art.sprite("door",53))
+	service_door.modulate = Color("bac6cd")
+	environment.add_child(service_door)
+	for rect in [Rect2(65,45,800,25),Rect2(65,45,20,85),Rect2(65,190,20,470),Rect2(845,45,20,615),Rect2(65,650,85,20),Rect2(230,650,635,20),Rect2(85,415,70,45),Rect2(345,415,250,45),Rect2(775,415,70,45)]:
+		var wall := Polygon2D.new()
+		wall.polygon = PackedVector2Array([rect.position,rect.position+Vector2(rect.size.x,0),rect.end,rect.position+Vector2(0,rect.size.y)])
+		wall.color = Color("4b5350")
+		environment.add_child(wall)
+	for entry in [["SERVICE",Vector2(85,100)],["ENTRANCE",Vector2(155,625)],["RECEPTION",Vector2(170,475)],["CUSTOMER PICKUP",Vector2(610,475)],["PARTS",Vector2(180,42)],["WORKBENCH",Vector2(410,145)]]:
+		var label := _label(entry[0], 12, Color("e5d9b7"))
+		label.position = entry[1]
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		environment.add_child(label)
+	for point in [Vector2(320,615),Vector2(390,615)]:
+		var chair := Node2D.new()
+		chair.position = point
+		chair.add_child(Art.sprite("waiting_chair",34))
+		environment.add_child(chair)
+	for point in [Vector2(315,125),Vector2(335,143)]:
+		var box := Node2D.new()
+		box.position = point
+		box.add_child(Art.sprite("package",28))
+		environment.add_child(box)
+	entities = Node2D.new()
+	entities.name = "FurnitureItemsNPCsFounder"
+	entities.y_sort_enabled = true
+	world.add_child(entities)
+	for id in Layout.FOOTPRINTS:
+		var rect: Rect2 = Layout.FOOTPRINTS[id]
+		var node := _entity(id, id, Vector2(rect.get_center().x, rect.end.y))
+		node.tint = Color("a18b64") if id != "outgoing_shelf" else Color("709182")
 
-func _draw_floor() -> void:
-	for x in range(0, 1041, 32):
-		draw_line(Vector2(x, 68), Vector2(x, 720), FLOOR_LINE, 1.0)
-	for y in range(68, 721, 32):
-		draw_line(Vector2(0, y), Vector2(1040, y), FLOOR_LINE, 1.0)
-	draw_line(Vector2(380, 68), Vector2(380, 720), Color("#d5aa5e55"), 3.0)
-	draw_line(Vector2(745, 68), Vector2(745, 720), Color("#d5aa5e55"), 3.0)
+func _entity(id: String, kind: String, point: Vector2) -> Node2D:
+	if not entity_nodes.has(id):
+		var node := Node2D.new()
+		node.set_script(Entity)
+		node.kind = kind
+		if kind in ["device", "package"]: node.z_index = 1
+		node.position = point.round()
+		node.name = id
+		entities.add_child(node)
+		entity_nodes[id] = node
+	var entity: Node2D = entity_nodes[id]
+	if absf(point.x - entity.position.x) > 1.0:
+		entity.facing = -1.0 if point.x < entity.position.x else 1.0
+	entity.position = entity.position.lerp(point, minf(1.0, get_process_delta_time()*14.0)).round() if is_processing() else point.round()
+	entity.show()
+	return entity
 
-func _draw_zone(rect: Rect2, label: String, color: Color) -> void:
-	draw_rect(rect, Color(color, 0.22), true)
-	draw_rect(rect, color, false, 3.0)
-	draw_string(ThemeDB.fallback_font, rect.position + Vector2(14, 27), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, INK)
-
-func _draw_customers() -> void:
-	var index := 0
-	for job in game_state.get_tiny_jobs():
-		if job.get("state", "") != "client_waiting":
+func _update_entities() -> void:
+	if world == null: return
+	var viewport := get_viewport_rect().size
+	var factor := minf((viewport.x-48)/930.0, (viewport.y-180)/680.0)
+	world.scale = Vector2.ONE * factor
+	world.position = Vector2((viewport.x-930*factor)/2,110)
+	for id in entity_nodes:
+		if not Layout.FOOTPRINTS.has(id): entity_nodes[id].hide()
+	var shop := game_state.repair_shop
+	var founder := _entity("Founder", "founder", shop.player.position)
+	founder.tint = Color("c67c57")
+	founder.moving = shop.player.state == "MOVING"
+	founder.carrying = shop.player.get("carrying", "")
+	founder.phase = shop.simulation_time
+	founder.working = shop.player.state == "WORKING"
+	entity_nodes["repair_bench_1"].upgraded = bool(shop.tools.get("better_soldering_station",false))
+	entity_nodes["parts_shelf"].upgraded = shop.storage_capacity > 12
+	front_door.scale.x = 1.0
+	service_door.scale.x = 1.0
+	entity_nodes["repair_bench_1"].work_progress = -1.0
+	for job in shop.jobs:
+		if job.get("customer_state", "absent") in ["arriving","leaving","returning","exiting"]:
+			front_door.scale.x = 0.24
+		if job.state in ["diagnosing","repairing"]:
+			entity_nodes["repair_bench_1"].work_progress = float(job.progress)
+		if job.get("customer_state", "absent") != "absent":
+			var customer := _entity("customer_"+job.id,"customer",Layout.customer_position(job))
+			customer.tint = [Color("7c9d9c"),Color("b58e68"),Color("9c83a4"),Color("87a776"),Color("bc7974"),Color("778fb2")][int(job.get("visual_variant",0))%6]
+			customer.visual_variant = int(job.get("visual_variant",0))
+			customer.moving = job.customer_state in ["arriving","leaving","returning","exiting"]
+			customer.phase = shop.simulation_time
+			customer.waiting = job.customer_state == "waiting"
+			customer.carrying = "device" if job.customer_state == "exiting" else ""
+		if job.state in ["waiting_for_customer_pickup","customer_collecting"]:
+			_entity("device_"+job.id,"device",Vector2(625+int(job.get("outbound_slot",0))*52,431))
+		elif job.state in ["diagnosing","repairing","awaiting_repair_choice","ready_for_pickup"]:
+			_entity("device_"+job.id,"device",Vector2(460,202))
+	for delivery in shop.deliveries:
+		var state := str(delivery.get("state","in_transit"))
+		if state == "in_transit": continue
+		service_door.scale.x = 0.24
+		var start := Layout.point("service_entrance")
+		var finish := Layout.point("delivery_drop")
+		var point := start.lerp(finish,float(delivery.progress)) if state == "courier_arriving" else (finish.lerp(start,float(delivery.progress)) if state == "courier_leaving" else finish)
+		var courier := _entity("courier_"+delivery.id,"courier",point)
+		courier.tint = Color("b29a59")
+		courier.moving = state != "delivering"
+		courier.phase = shop.simulation_time
+		courier.carrying = "package" if not delivery.get("credited",false) else ""
+	for id in entity_nodes.keys():
+		if not entity_nodes[id].visible:
+			entity_nodes[id].queue_free()
+			entity_nodes.erase(id)
 			continue
-		var position := Vector2(150.0 + float(index % 3) * 78.0, 175.0)
-		draw_circle(position, 15.0, [Color("#d48767"), Color("#c5a06b"), Color("#9d82c4")][index % 3])
-		draw_rect(Rect2(position + Vector2(-13, 11), Vector2(26, 25)), Color("#6b8fb5"), true)
-		draw_string(ThemeDB.fallback_font, position + Vector2(-28, 56), "INSPECT", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, ACCENT)
-		draw_string(ThemeDB.fallback_font, position + Vector2(-34, 71), str(job.get("customer_archetype", "CUSTOMER")), HORIZONTAL_ALIGNMENT_LEFT, 70, 9, MUTED)
-		index += 1
-	if index == 0:
-		draw_string(ThemeDB.fallback_font, Vector2(112, 220), "No customer waiting", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, MUTED)
+		if Layout.FOOTPRINTS.has(id): entity_nodes[id].highlighted = Layout.FOOTPRINTS[id].has_point(world.get_local_mouse_position())
+		entity_nodes[id]._update_art()
+		entity_nodes[id].queue_redraw()
 
-func _draw_storage() -> void:
-	for row in range(2):
-		for column in range(4):
-			var position := Vector2(112 + column * 55, 405 + row * 52)
-			draw_rect(Rect2(position, Vector2(42, 30)), Color("#a87537"), true)
-			draw_rect(Rect2(position, Vector2(42, 30)), Color("#d6a85d"), false, 2.0)
-			var components: Array = game_state.catalog.get("components", [])
-			if column < components.size():
-				var id := str(components[column].get("id", ""))
-				var amount := int(game_state.inventory.get(id, 0))
-				draw_string(ThemeDB.fallback_font, position + Vector2(5, 20), str(amount), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK if amount > 0 else RED)
-				draw_string(ThemeDB.fallback_font, Vector2(position.x - 2, position.y + 44), str(components[column].get("short", id.left(4).to_upper())), HORIZONTAL_ALIGNMENT_LEFT, 48, 9, MUTED)
-	var summary := game_state.get_summary()
-	draw_string(ThemeDB.fallback_font, Vector2(104, 548), "CAPACITY %d / %d" % [int(summary.get("storage_used", 0)), int(summary.get("storage_capacity", 12))], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ACCENT)
-
-func _draw_bench() -> void:
-	var bench := Vector2(540, 465)
-	draw_rect(Rect2(bench - Vector2(130, 30), Vector2(260, 60)), Color("#9a633f"), true)
-	draw_rect(Rect2(bench - Vector2(130, 30), Vector2(260, 60)), Color("#d99b62"), false, 3.0)
-	draw_line(bench + Vector2(-100, 30), bench + Vector2(-100, 74), Color("#4b3025"), 7.0)
-	draw_line(bench + Vector2(100, 30), bench + Vector2(100, 74), Color("#4b3025"), 7.0)
-	draw_rect(Rect2(bench + Vector2(-90, -20), Vector2(44, 20)), Color("#d0d7dc"), true)
-	draw_line(bench + Vector2(-69, -10), bench + Vector2(-25, -10), Color("#303b45"), 3.0)
-	draw_circle(bench + Vector2(76, -12), 13, Color("#f4bd55"))
-	draw_line(bench + Vector2(76, -12), bench + Vector2(45, -35), Color("#e2e8f0"), 4.0)
-	if game_state.owned_tools.get("multimeter", false):
-		draw_rect(Rect2(bench + Vector2(12, -22), Vector2(30, 24)), Color("#6aa7c4"), true)
-		draw_line(bench + Vector2(42, -10), bench + Vector2(64, -4), Color("#202b35"), 2.0)
-	if game_state.owned_tools.get("better_soldering_station", false):
-		draw_rect(Rect2(bench + Vector2(-12, -22), Vector2(20, 22)), Color("#bf5b4f"), true)
-	var job := _job_in_state(["diagnosing", "awaiting_repair_choice", "repairing", "ready_for_pickup"])
-	if not job.is_empty():
-		_draw_device(bench + Vector2(0, -58), str(job.get("visual_kind", "device_board")), job.get("state", "") == "ready_for_pickup")
-		if job.get("state", "") in ["diagnosing", "repairing"]:
-			var color := BLUE if job.get("state", "") == "diagnosing" else GREEN
-			draw_rect(Rect2(455, 525, 170, 8), Color("#0d151f"), true)
-			draw_rect(Rect2(455, 525, 170 * float(job.get("progress", 0.0)), 8), color, true)
-
-func _draw_device(position: Vector2, visual_kind: String, ready: bool) -> void:
-	var body_color := ACCENT if ready else Color("#74a7be")
-	draw_rect(Rect2(position - Vector2(42, 25), Vector2(84, 50)), body_color, true)
-	draw_rect(Rect2(position - Vector2(42, 25), Vector2(84, 50)), Color("#d8e8e8"), false, 3.0)
-	draw_rect(Rect2(position - Vector2(30, 16), Vector2(60, 27)), Color("#162638"), true)
-	draw_string(ThemeDB.fallback_font, position + Vector2(-30, 5), "DEVICE", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, INK)
-
-func _draw_outbound() -> void:
-	draw_rect(Rect2(800, 185, 170, 65), Color("#4e956f"), true)
-	draw_rect(Rect2(800, 185, 170, 65), Color("#a5e3ad"), false, 3.0)
-	draw_string(ThemeDB.fallback_font, Vector2(824, 225), "CUSTOMER PICKUP", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, INK)
-	var count := 0
-	for job in game_state.get_tiny_jobs():
-		if job.get("state", "") == "completed":
-			count += 1
-	for i in range(min(count, 4)):
-		draw_rect(Rect2(818 + i * 34, 265, 25, 20), Color("#66bb77"), true)
-
-func _draw_deliveries() -> void:
-	var index := 0
-	for delivery in game_state.deliveries:
-		var start := Vector2(930, 75 - index * 22)
-		var finish := Vector2(200, 385)
-		var position: Vector2 = start.lerp(finish, float(delivery.get("progress", 0.0)))
-		draw_rect(Rect2(position - Vector2(12, 9), Vector2(24, 18)), Color("#fbbf24"), true)
-		draw_line(position + Vector2(-8, -3), position + Vector2(8, -3), Color("#78350f"), 2.0)
-		draw_string(ThemeDB.fallback_font, position + Vector2(-18, -14), "COURIER", HORIZONTAL_ALIGNMENT_LEFT, 55, 8, BLUE)
-		index += 1
-
-func _draw_player() -> void:
-	var position: Vector2 = game_state.tiny_player.get("position", Vector2(540, 600))
-	var moving: bool = str(game_state.tiny_player.get("state", "")) == "MOVING"
-	draw_circle(position + Vector2(0, -22), 12.0, Color("#f2c14e"))
-	draw_rect(Rect2(position + Vector2(-14, -10), Vector2(28, 35)), Color("#d66a52"), true)
-	draw_line(position + Vector2(-7, 25), position + Vector2(-10, 42), INK, 4.0)
-	draw_line(position + Vector2(7, 25), position + Vector2(10, 42), INK, 4.0)
-	draw_string(ThemeDB.fallback_font, position + Vector2(-27, -45), "WALKING" if moving else "FOUNDER", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, BLUE if moving else ACCENT)
-	var carrying := str(game_state.tiny_player.get("carrying", ""))
-	if not carrying.is_empty():
-		draw_rect(Rect2(position + Vector2(17, -3), Vector2(24, 22)), Color("#c99551"), true)
-		draw_string(ThemeDB.fallback_font, position + Vector2(14, 34), "CARRY", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, ACCENT)
+func _draw() -> void:
+	draw_rect(get_viewport_rect(),Color("273633"))
