@@ -700,6 +700,16 @@ Animation should communicate function more than decorative realism.
 
 ---
 
+# Asset Files
+
+Store all sprites, textures, sounds, music, fonts, visual effects, and other game asset files under the project `assets/` folder.
+
+When a required asset is not present, use a Godot-native placeholder until the real asset is available. For example, use a blue box for a missing sprite. Do not add temporary asset files outside `assets/`.
+
+The `assets/` folder itself must be committed to the repository, using a tracked placeholder such as `.gitkeep` when needed. Asset files inside `assets/` must not be committed to GitHub; keep them ignored by Git and never force-add them.
+
+---
+
 # Workshop Visual Feedback
 
 The workshop should visually communicate system state.

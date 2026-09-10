@@ -3,3 +3,7 @@
 /android/
 .tools/
 *.uid
+
+# Keep assets directory marker; exclude all asset files
+assets/**
+!assets/.keep
