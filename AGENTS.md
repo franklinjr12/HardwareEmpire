@@ -268,7 +268,7 @@ Prefer:
 var speed: float = 20.0
 
 func calculate_duration(base_duration: float) -> float:
-    return base_duration
+	return base_duration
 ```
 
 Avoid unnecessary untyped APIs.
@@ -479,16 +479,16 @@ Example:
 
 ```text
 TemperatureSensorDefinition
-    base_price
-    bill_of_materials
-    process_steps
-    required_research
+	base_price
+	bill_of_materials
+	process_steps
+	required_research
 
 ProductBatchState
-    quantity
-    completed_quantity
-    current_step
-    quality
+	quantity
+	completed_quantity
+	current_step
+	quality
 ```
 
 Do not hardcode individual products or jobs into generic simulation systems.
@@ -909,11 +909,11 @@ Example:
 ```text
 game/
   simulation/
-    production_system.gd
+	production_system.gd
 
 tests/
   simulation/
-    production_system_test.gd
+	production_system_test.gd
 ```
 
 ---
@@ -1243,3 +1243,28 @@ When multiple solutions are reasonable, prefer the one that:
 The long-term goal is not merely to make numbers increase.
 
 The goal is for the player to **watch a tiny electronics repair bench evolve into a living, increasingly complex hardware production company**.
+
+## Godot Editor MCP
+
+This project uses Godot Editor MCP.
+
+When the Godot editor is available:
+
+- Use Godot MCP to inspect the live editor and scene tree.
+- Prefer MCP inspection over guessing the structure of `.tscn` files.
+- Enable additional MCP toolsets only when needed.
+- Use scene-editing tools for structural scene changes when appropriate.
+- Use runtime tools to launch and inspect the game after meaningful changes.
+- Use screenshot/runtime inspection for visual changes.
+- Use testing tools when appropriate.
+- Check the Godot debugger for runtime errors after changes.
+
+For tasks involving both source code and the editor:
+1. Inspect the relevant project files.
+2. Inspect the current Godot scene through MCP.
+3. Make the required changes.
+4. Run automated tests where applicable.
+5. Run the affected scene/game.
+6. Inspect runtime errors.
+7. Visually inspect the result when the task affects gameplay or presentation.
+8. Iterate until the requested behavior works.
